@@ -36,6 +36,7 @@ class _HomePageState extends State<HomePage>
   bool _error = false;
   bool _hasMore = true;
   int _page = 0;
+  int _seq = 0;
 
   @override
   bool get wantKeepAlive => true;
@@ -60,13 +61,15 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _refresh() async {
     // 初始加载/下拉刷新/失败重试共用；首次加载时 _loading 已为 true
+    final seq = ++_seq;
     setState(() {
       _loading = true;
       _error = false;
+      _loadingMore = false;
     });
     try {
       final items = await ApiService.fetchHomeFeed(page: 0);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       debugPrint('首页推荐加载: ${items.length} 条');
       setState(() {
         _list
@@ -78,7 +81,7 @@ class _HomePageState extends State<HomePage>
       });
     } catch (e) {
       debugPrint('首页推荐加载失败: $e');
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _loading = false;
         _error = _list.isEmpty;
@@ -88,10 +91,11 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _loadMore() async {
     if (_loading || _loadingMore || !_hasMore || _error) return;
+    final seq = _seq;
     setState(() => _loadingMore = true);
     try {
       final items = await ApiService.fetchHomeFeed(page: _page);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         // 去重（信息流可能重复推荐）
         final ids = _list.map((d) => d.bookId).toSet();
@@ -107,6 +111,20 @@ class _HomePageState extends State<HomePage>
       if (!mounted) return;
       setState(() => _loadingMore = false);
     }
+  }
+
+  void _switchDataSource(String v) {
+    final provider = context.read<SettingsProvider>();
+    if (v == AppConstants.dataSourceApi52 && !provider.hasApi52Key) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('52api 红果源需先在「设置」中配置 apikey'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    provider.setDataSource(v);
   }
 
   @override
@@ -129,8 +147,7 @@ class _HomePageState extends State<HomePage>
           PopupMenuButton<String>(
             tooltip: '切换数据源',
             icon: const Icon(Icons.dns_outlined),
-            onSelected: (v) =>
-                context.read<SettingsProvider>().setDataSource(v),
+            onSelected: _switchDataSource,
             itemBuilder: (context) {
               final current =
                   context.read<SettingsProvider>().dataSource;

@@ -36,6 +36,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
   bool _hasMore = false;
   int _page = 1;
   int _totalPages = 1;
+  int _seq = 0;
 
   @override
   bool get wantKeepAlive => true;
@@ -76,13 +77,15 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
   }
 
   Future<void> _refresh() async {
+    final seq = ++_seq;
     setState(() {
       _loading = true;
       _error = false;
+      _loadingMore = false;
     });
     try {
       final result = await ApiService.fetchRank(slug: _slug, page: 1);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _list
           ..clear()
@@ -95,7 +98,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
       });
     } catch (e) {
       debugPrint('排行榜加载失败[$_slug]: $e');
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _loading = false;
         _error = _list.isEmpty;
@@ -105,6 +108,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
 
   Future<void> _loadMore() async {
     if (_loading || _loadingMore || !_hasMore || _error) return;
+    final seq = _seq;
     if (_page > _totalPages) {
       setState(() => _hasMore = false);
       return;
@@ -112,7 +116,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
     setState(() => _loadingMore = true);
     try {
       final result = await ApiService.fetchRank(slug: _slug, page: _page);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         final ids = _list.map((d) => d.bookId).toSet();
         for (final d in result.items) {

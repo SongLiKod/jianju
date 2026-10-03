@@ -35,6 +35,7 @@ class _CategoryPageState extends State<CategoryPage>
   bool _error = false;
   bool _hasMore = true;
   int _page = 1;
+  int _seq = 0;
 
   @override
   bool get wantKeepAlive => true;
@@ -75,13 +76,15 @@ class _CategoryPageState extends State<CategoryPage>
   }
 
   Future<void> _refresh() async {
+    final seq = ++_seq;
     setState(() {
       _loading = true;
       _error = false;
+      _loadingMore = false;
     });
     try {
       final items = await ApiService.fetchCategory(slug: _slug, page: 1);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _list
           ..clear()
@@ -92,7 +95,7 @@ class _CategoryPageState extends State<CategoryPage>
       });
     } catch (e) {
       debugPrint('分类加载失败[$_slug]: $e');
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         _loading = false;
         _error = _list.isEmpty;
@@ -102,10 +105,11 @@ class _CategoryPageState extends State<CategoryPage>
 
   Future<void> _loadMore() async {
     if (_loading || _loadingMore || !_hasMore || _error) return;
+    final seq = _seq;
     setState(() => _loadingMore = true);
     try {
       final items = await ApiService.fetchCategory(slug: _slug, page: _page);
-      if (!mounted) return;
+      if (!mounted || seq != _seq) return;
       setState(() {
         final ids = _list.map((d) => d.bookId).toSet();
         for (final d in items) {

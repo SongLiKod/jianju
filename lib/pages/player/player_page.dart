@@ -42,7 +42,9 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage> {
   late final Player _player;
   late final VideoController _controller;
+  late final Future<void> _mpvTweaks;
   StreamSubscription? _completedSub;
+  final List<StreamSubscription> _subs = [];
   Timer? _progressTimer;
   Timer? _hideTimer;
 
@@ -58,6 +60,12 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _controlsVisible = true;
   bool _fullscreen = false;
 
+  /// 本集结尾已处理标记：防 completed 与位置兜底双触发、重复换集
+  bool _endHandled = false;
+
+  /// 换集序号：过期异步结果直接丢弃，防止快速换集时旧解析覆盖新集
+  int _openSeq = 0;
+
   @override
   void initState() {
     super.initState();
@@ -68,18 +76,22 @@ class _PlayerPageState extends State<PlayerPage> {
     _speed = context.read<SettingsProvider>().defaultSpeed;
 
     _bindStreams();
+    _mpvTweaks = _applyMpvTweaks();
     _openEpisode(widget.initialEpisode, resumeSaved: true);
   }
 
   void _bindStreams() {
-    _player.stream.playing.listen((v) => mountedSafe(() => setState(() => _playing = v)));
-    _player.stream.position.listen((v) => mountedSafe(() => setState(() => _position = v)));
-    _player.stream.duration.listen((v) => mountedSafe(() => setState(() => _duration = v)));
-    _player.stream.error.listen((e) {
-      if (e.isNotEmpty && mounted && !_loading) {
-        mountedSafe(() => setState(() => _error = '播放出错：$e'));
-      }
-    });
+    _subs
+      ..add(_player.stream.playing
+          .listen((v) => mountedSafe(() => setState(() => _playing = v))))
+      ..add(_player.stream.position.listen(_onPosition))
+      ..add(_player.stream.duration
+          .listen((v) => mountedSafe(() => setState(() => _duration = v))))
+      ..add(_player.stream.error.listen((e) {
+        if (e.isNotEmpty && mounted && !_loading) {
+          mountedSafe(() => setState(() => _error = '播放出错：$e'));
+        }
+      }));
     // 播放完毕自动跳转下一集
     _completedSub = _player.stream.completed.listen((completed) {
       if (!completed || !mounted) return;
@@ -91,10 +103,49 @@ class _PlayerPageState extends State<PlayerPage> {
     if (mounted) fn();
   }
 
+  void _onPosition(Duration v) {
+    final prev = _position;
+    mountedSafe(() => setState(() => _position = v));
+    if (v + const Duration(seconds: 1) < prev) {
+      // 拖回进度重看：解除片尾防重入，允许再次自动下一集
+      _endHandled = false;
+    }
+    _maybeFinish(v);
+  }
+
+  /// 片尾兜底：completed 流未触发时，以播放位置逼近结尾判定
+  void _maybeFinish(Duration v) {
+    if (_loading || _endHandled || _duration <= Duration.zero) return;
+    if (v >= _duration - const Duration(milliseconds: 300)) {
+      _onEpisodeEnd();
+    }
+  }
+
+  /// mpv 音频调优（针对第三方线路 m3u8：缓冲换顿/破音/倍速变调）。
+  /// 属性不存在或不允许运行时修改时静默忽略，不影响播放。
+  Future<void> _applyMpvTweaks() async {
+    final p = _player.platform;
+    if (p is! NativePlayer) return;
+    Future<void> set(String key, String value) async {
+      try {
+        await p.setProperty(key, value);
+      } catch (e) {
+        debugPrint('mpv setProperty($key) 失败: $e');
+      }
+    }
+
+    await set('audio-buffer', '500'); // 加大音频输出缓冲，减少换气/破音
+    await set('cache-secs', '20'); // 网络流读取余量，减少断流卡顿
+    await set('audio-pitch-correction', 'yes'); // 倍速时保持音高
+    await set('volume-max', '100'); // 禁止超过 100% 增益导致破音
+  }
+
   // ==================== 换集 / 播放源 ====================
 
   Future<void> _openEpisode(Episode episode, {bool resumeSaved = false}) async {
     if (!mounted) return;
+    final seq = ++_openSeq;
+    _endHandled = false;
     setState(() {
       _episode = episode;
       _loading = true;
@@ -103,6 +154,17 @@ class _PlayerPageState extends State<PlayerPage> {
       _duration = Duration.zero;
       _dragValue = null;
     });
+    // 历史指针跟随当前集：自动下一集后不再停留在旧集
+    if (HistoryService.recordOf(widget.drama.bookId)?.lastEpisodeItemId !=
+        episode.itemId) {
+      await HistoryService.upsert(
+        widget.drama,
+        episodeIndex: episode.index,
+        episodeItemId: episode.itemId,
+        positionMs: 0,
+      );
+    }
+    if (!mounted || seq != _openSeq) return;
     _startProgressSaving();
     try {
       // 1) 获取播放直链：前 3 集官方直链，其余由内置线路按测速竞速解析
@@ -112,20 +174,26 @@ class _PlayerPageState extends State<PlayerPage> {
         title: widget.drama.title,
         episodeIndex: episode.index,
       );
+      if (!mounted || seq != _openSeq) return;
+      await _mpvTweaks;
+      if (!mounted || seq != _openSeq) return;
       await _player.open(Media(playUrl));
+      if (!mounted || seq != _openSeq) return;
       await _player.setRate(_speed);
+      if (!mounted || seq != _openSeq) return;
       // 2) 进度记忆：自动恢复上次观看位置
       if (resumeSaved) {
-        final savedMs = HistoryService.progressOf(widget.drama.bookId, episode.itemId);
-        if (savedMs > 0 && mounted) {
+        final savedMs =
+            HistoryService.progressOf(widget.drama.bookId, episode.itemId);
+        if (savedMs > 0) {
           await _player.seek(Duration(milliseconds: savedMs));
         }
+        if (!mounted || seq != _openSeq) return;
       }
-      if (!mounted) return;
       setState(() => _loading = false);
       _scheduleHideControls();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || seq != _openSeq) return;
       setState(() {
         _loading = false;
         _error = PlayLineResolver.lastError ?? '播放源获取失败，请稍后重试';
@@ -138,7 +206,14 @@ class _PlayerPageState extends State<PlayerPage> {
   void _startProgressSaving() {
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(AppConstants.progressSaveInterval, (_) {
-      if (!_playing || _position < AppConstants.progressMinKeep) return;
+      if (_loading || !_playing || _position < AppConstants.progressMinKeep) {
+        return;
+      }
+      // 尾部不保存：避免进度存到结尾，下次进入即“看完”循环
+      if (_duration > Duration.zero &&
+          _position >= _duration - AppConstants.progressEndTrim) {
+        return;
+      }
       HistoryService.upsert(
         widget.drama,
         episodeIndex: _episode.index,
@@ -149,35 +224,30 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _onEpisodeEnd() async {
+    if (_endHandled || _loading || !mounted) return;
+    _endHandled = true;
+    final seq = _openSeq;
     await HistoryService.markEpisodeFinished(
       widget.drama,
       episodeIndex: _episode.index,
     );
-    final next = _episodeByIndex(_episode.index + 1);
-    if (next != null && next.playable) {
+    // 处理期间用户手动换集则不再接管
+    if (!mounted || seq != _openSeq) return;
+    final next = _nextPlayable;
+    if (next != null) {
       _openEpisode(next);
-    } else {
-      // 全部可播剧集看完（后续为官方锁定集）
-      if (mounted) {
-        setState(() => _playing = false);
-        _showControls();
-        if (next != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('官方仅开放前 3 集，后续剧集暂未解锁'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      }
+      return;
     }
-  }
-
-  Episode? _episodeByIndex(int index) {
-    for (final ep in widget.episodes) {
-      if (ep.index == index) return ep;
-    }
-    return null;
+    setState(() => _playing = false);
+    _showControls();
+    final hasLater = widget.episodes.any((e) => e.index > _episode.index);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content:
+            Text(hasLater ? '官方仅开放前 3 集，后续剧集暂未解锁' : '已看完最后一集'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   /// 下一集可播剧集（跳过官方锁定集）
@@ -186,6 +256,16 @@ class _PlayerPageState extends State<PlayerPage> {
       if (ep.index > _episode.index && ep.playable) return ep;
     }
     return null;
+  }
+
+  /// 上一集可播剧集（跳过编号缺口与锁定集）
+  Episode? get _prevEpisode {
+    Episode? best;
+    for (final ep in widget.episodes) {
+      if (ep.index >= _episode.index || !ep.playable) continue;
+      if (best == null || ep.index > best.index) best = ep;
+    }
+    return best;
   }
 
   bool get _hasNextPlayable => _nextPlayable != null;
@@ -834,18 +914,15 @@ class _PlayerPageState extends State<PlayerPage> {
                     '音量',
                     _adjustVolume),
                 _toolButton(context, Icons.skip_previous_rounded,
-                    _episode.index > 1 ? '上一集' : '', _episode.index > 1
-                        ? () => _openEpisode(
-                            _episodeByIndex(_episode.index - 1) ?? _episode)
+                    _prevEpisode != null ? '上一集' : '',
+                    _prevEpisode != null
+                        ? () => _openEpisode(_prevEpisode!)
                         : null),
                 _toolButton(
                     context,
                     Icons.skip_next_rounded,
                     _hasNextPlayable ? '下一集' : '',
-                    _hasNextPlayable
-                        ? () => _openEpisode(
-                            _nextPlayable ?? _episode)
-                        : null),
+                    _hasNextPlayable ? () => _openEpisode(_nextPlayable!) : null),
                 const Spacer(),
                 _toolButton(
                     context,
@@ -909,6 +986,9 @@ class _PlayerPageState extends State<PlayerPage> {
     _progressTimer?.cancel();
     _hideTimer?.cancel();
     _completedSub?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
     _player.dispose();
     _exitFullscreenIfAny();
     super.dispose();

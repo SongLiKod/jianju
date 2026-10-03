@@ -44,6 +44,9 @@ class MaccmsSource {
   /// 最多展示的分类/榜单 tab 数
   static const int maxTabs = 8;
 
+  /// 候选分类内容探测上限（并行轻量请求，用于过滤无内容分类）
+  static const int probeLimit = 16;
+
   /// class（全站分类）按线路缓存，避免每次翻页都拉
   static final Map<String, Map<String, String>> _tabsCache = {};
 
@@ -210,7 +213,8 @@ class MaccmsSource {
 
   // ==================== 分类 tab ====================
 
-  /// 分类 tab：`type_id -> type_name`（按 [tabPreference] 排序，最多 [maxTabs] 条）
+  /// 分类 tab：`type_id -> type_name`（按 [tabPreference] 排序，
+  /// 过滤无内容分类，最多 [maxTabs] 条）
   Future<Map<String, String>> categoryTabs() async {
     final cached = _tabsCache[line.id];
     if (cached != null) return cached;
@@ -227,6 +231,10 @@ class MaccmsSource {
         byName[id] = name;
       }
     }
+    if (byName.isEmpty) {
+      // class 拉取失败：返回兜底但不缓存，下次进入页面重试
+      return const {'5': '短剧', '41': 'AI漫剧', '2': '电视剧', '1': '电影'};
+    }
 
     final ordered = <String, String>{};
     for (final want in tabPreference) {
@@ -235,24 +243,51 @@ class MaccmsSource {
       });
     }
     byName.forEach((id, name) => ordered.putIfAbsent(id, () => name));
-    if (ordered.length > maxTabs) {
+
+    // 候选最多探测 [probeLimit] 条，剔除没有内容的分类
+    final candidates = <String, String>{};
+    for (final e in ordered.entries) {
+      if (candidates.length >= probeLimit) break;
+      candidates[e.key] = e.value;
+    }
+    final visible = await _dropEmptyTypes(candidates);
+    if (visible.length > maxTabs) {
       final keep = <String, String>{};
-      for (final e in ordered.entries) {
+      for (final e in visible.entries) {
         if (keep.length >= maxTabs) break;
         keep[e.key] = e.value;
       }
       return _cacheTabs(keep);
     }
-    return _cacheTabs(ordered);
+    return _cacheTabs(visible);
+  }
+
+  /// 并行探测候选分类的内容数，剔除 `total=0` 的空分类
+  /// （探测失败的分类保留；全部失败原样返回，避免误隐藏）
+  Future<Map<String, String>> _dropEmptyTypes(Map<String, String> tabs) async {
+    if (tabs.length <= 1) return tabs;
+    var responded = 0;
+    final counts = await Future.wait(tabs.keys.map((id) async {
+      final j = await _getJson('ac=list&t=$id&pg=1');
+      if (j == null) return null;
+      responded++;
+      final total = int.tryParse(j['total']?.toString() ?? '');
+      if (total != null) return total;
+      final list = j['list'];
+      return list is List ? list.length : -1;
+    }));
+    if (responded == 0) return tabs;
+    final visible = <String, String>{};
+    var i = 0;
+    for (final e in tabs.entries) {
+      final n = counts[i++];
+      if (n == null || n < 0 || n > 0) visible[e.key] = e.value;
+    }
+    return visible.isEmpty ? tabs : visible;
   }
 
   Map<String, String> _cacheTabs(Map<String, String> tabs) {
-    if (tabs.isEmpty) {
-      // class 缺失时按 maccms 常见分类兜底
-      const fallback = {'5': '短剧', '41': 'AI漫剧', '2': '电视剧', '1': '电影'};
-      _tabsCache[line.id] = fallback;
-      return fallback;
-    }
+    if (tabs.isEmpty) return tabs;
     if (_tabsCache.length >= 8) _tabsCache.clear();
     _tabsCache[line.id] = tabs;
     return tabs;
