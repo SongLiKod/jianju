@@ -28,6 +28,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
   final ScrollController _scroll = ScrollController();
 
   String _slug = ApiConstants.rankSlugs.first;
+  Map<String, String> _labels = ApiConstants.rankLabels;
   String _updatedText = '';
   bool _loading = true;
   bool _loadingMore = false;
@@ -42,12 +43,30 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
   @override
   void initState() {
     super.initState();
-    _refresh();
+    _boot();
     _scroll.addListener(() {
       if (_scroll.position.pixels > _scroll.position.maxScrollExtent - 400) {
         _loadMore();
       }
     });
+  }
+
+  /// 启动/重试入口：先取当前数据源的榜单 tab（站点模式为该站按热度榜单），
+  /// 再拉第一页
+  Future<void> _boot() async {
+    try {
+      final labels = await ApiService.fetchRankLabels();
+      if (!mounted) return;
+      if (labels.isNotEmpty) {
+        setState(() {
+          _labels = labels;
+          if (!labels.containsKey(_slug)) _slug = labels.keys.first;
+        });
+      }
+    } catch (e) {
+      debugPrint('榜单 tab 加载失败: $e');
+    }
+    await _refresh();
   }
 
   @override
@@ -139,7 +158,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
         children: [
           _SlugBar(
             slug: _slug,
-            labels: ApiConstants.rankLabels,
+            labels: _labels,
             seed: seed,
             onChanged: _switchSlug,
           ),
@@ -152,7 +171,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
 
   Widget _buildList(BuildContext context) {
     if (_loading && _list.isEmpty) return const LoadingView();
-    if (_error) return ErrorRetryView(onRetry: _refresh);
+    if (_error) return ErrorRetryView(onRetry: _boot);
     if (_list.isEmpty) return const EmptyView(message: '榜单暂无数据');
 
     return RefreshIndicator(

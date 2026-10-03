@@ -17,6 +17,33 @@ class AppConstants {
   static const String keyPrimaryColor = 'settings.primary_color'; // 色板索引
   // 播放
   static const String keyDefaultSpeed = 'settings.default_speed';
+  // 数据源
+  static const String keyDataSource = 'settings.data_source'; // web/api52/line:<id>
+  static const String keyApi52Key = 'settings.api52_key';
+  // 播放线路
+  static const String keyPinnedLine = 'settings.pinned_line'; // ''=自动（最快）
+  static const String keyPlayLineStats = 'local.play_line_stats'; // 线路测速统计 JSON
+
+  // ==================== 数据源 ====================
+  /// 数据源：官方网页源（默认，前 3 集可播）
+  static const String dataSourceWeb = 'web';
+  /// 数据源：52api 红果源（全集，需 apikey）
+  static const String dataSourceApi52 = 'api52';
+
+  /// 数据源前缀：整站数据源（`line:<线路id>`，首页/分类/搜索/详情/播放全走该站）
+  static const String dataSourceLinePrefix = 'line:';
+
+  /// 整站数据源数据源 id：`line:<线路id>` → 线路 id（非整站源返回空串）
+  static String dataSourceLineId(String dataSource) =>
+      dataSource.startsWith(dataSourceLinePrefix)
+          ? dataSource.substring(dataSourceLinePrefix.length)
+          : '';
+
+  /// 生成整站数据源 id
+  static String dataSourceOfLine(String lineId) => '$dataSourceLinePrefix$lineId';
+
+  static const String api52BaseUrl = 'https://www.52api.cn/api/hg_duanju';
+  static const String api52DocUrl = 'https://www.52api.cn';
   // 账号与设备
   static const String keyToken = 'account.token';
   static const String keyInstallId = 'device.install_id';

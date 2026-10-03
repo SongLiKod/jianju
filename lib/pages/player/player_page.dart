@@ -13,14 +13,16 @@ import '../../core/models/drama.dart';
 import '../../core/models/episode.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/history_service.dart';
+import '../../core/services/play_lines.dart';
 import '../../core/state/settings_provider.dart';
 
 /// 播放模块（核心）
 ///
-/// 1. 获取红果官方直链 MP4 播放源（无广告分片，无需过滤）
+/// 1. 播放直链：前 3 集官方 MP4 直链，其余集数由内置线路（20 条）按测速竞速兜底
 /// 2. 倍速 0.75x ~ 5x（默认值读取设置页全局配置）
 /// 3. 进度拖拽 + 进度记忆、全屏播放、音量调节
-/// 4. 播放完毕自动跳转下一集（官方锁定集自动停止）
+/// 4. 播放线路：默认自动选最快，可手动锁定任意一条
+/// 5. 播放完毕自动跳转下一集
 class PlayerPage extends StatefulWidget {
   final Drama drama;
   final List<Episode> episodes;
@@ -103,10 +105,12 @@ class _PlayerPageState extends State<PlayerPage> {
     });
     _startProgressSaving();
     try {
-      // 1) 获取官方直链 MP4 播放源
+      // 1) 获取播放直链：前 3 集官方直链，其余由内置线路按测速竞速解析
       final playUrl = await ApiService.fetchPlayUrl(
         seriesId: widget.drama.bookId,
         vid: episode.itemId,
+        title: widget.drama.title,
+        episodeIndex: episode.index,
       );
       await _player.open(Media(playUrl));
       await _player.setRate(_speed);
@@ -124,7 +128,7 @@ class _PlayerPageState extends State<PlayerPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = '播放源获取失败，请稍后重试';
+        _error = PlayLineResolver.lastError ?? '播放源获取失败，请稍后重试';
       });
     }
   }
@@ -460,6 +464,152 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  // ==================== 播放线路 ====================
+
+  /// 线路选择：首项为“自动（最快）”，其余为内置 20 条线路，可手动锁定
+  Future<void> _showLineSheet() async {
+    _showControls();
+    final seed = Theme.of(context).colorScheme.primary;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(sheetContext).size.height * 0.66,
+            child: Consumer<SettingsProvider>(
+              builder: (context, settings, _) {
+                final pinned = settings.pinnedLineId;
+                final lines = PlayLineResolver.orderedLines();
+                return Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Text('播放线路',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: seed)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                                '共${kPlayLines.length}条 · 默认最快 · 已按测速排序',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(sheetContext)
+                                        .colorScheme
+                                        .outline)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          _lineTile(
+                            sheetContext: sheetContext,
+                            seed: seed,
+                            pinned: pinned,
+                          ),
+                          for (final line in lines)
+                            _lineTile(
+                              sheetContext: sheetContext,
+                              seed: seed,
+                              pinned: pinned,
+                              line: line,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _lineTile({
+    required BuildContext sheetContext,
+    required Color seed,
+    required String pinned,
+    PlayLine? line,
+  }) {
+    final auto = line == null;
+    final selected = auto ? pinned.isEmpty : pinned == line.id;
+    final inUse = !auto && PlayLineResolver.lastUsedLine?.id == line.id;
+    final st = auto ? null : PlayLineResolver.statOf(line.id);
+    final latency = st?.emaMs;
+
+    final String subtitle;
+    if (auto) {
+      subtitle = '按历史测速自动选择最快线路（本集可播时立即生效）';
+    } else {
+      subtitle = <String>[
+        latency == null ? '未测速' : '平均 ${latency.round()}ms',
+        if (st != null && st.fails > 0) '连续失败${st.fails}次',
+      ].join(' · ');
+    }
+
+    return ListTile(
+      dense: true,
+      selected: selected,
+      selectedColor: seed,
+      leading: selected
+          ? Icon(Icons.check_rounded, color: seed, size: 20)
+          : inUse
+              ? Icon(Icons.cell_tower_rounded, color: seed, size: 18)
+              : const SizedBox(width: 20),
+      title: Text(
+        auto ? '自动选择（最快）' : line.name,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+          color: st != null && st.fails >= 3 ? Colors.grey : null,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          fontSize: 11.5,
+          color: st != null && st.fails > 0
+              ? Colors.orange
+              : Theme.of(sheetContext).colorScheme.outline,
+        ),
+      ),
+      trailing: auto
+          ? null
+          : Text(
+              line.mode == PlayLineMode.api ? 'API' : '网页',
+              style: TextStyle(
+                  fontSize: 10.5,
+                  color: Theme.of(sheetContext).colorScheme.outline),
+            ),
+      onTap: () => _selectLine(sheetContext, line),
+    );
+  }
+
+  /// 锁定/取消锁定线路：与当前选择不同才重载本集
+  void _selectLine(BuildContext sheetContext, PlayLine? line) {
+    final settings = context.read<SettingsProvider>();
+    final next = line?.id ?? '';
+    final prev = settings.pinnedLineId;
+    Navigator.of(sheetContext).pop();
+    if (next == prev) return;
+    settings.setPinnedLine(next).then((_) {
+      if (!mounted) return;
+      _openEpisode(_episode);
+    });
+  }
+
   // ==================== UI ====================
 
   @override
@@ -599,6 +749,11 @@ class _PlayerPageState extends State<PlayerPage> {
                   fontSize: 15,
                   fontWeight: FontWeight.w600),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.cell_tower_rounded, color: Colors.white),
+            tooltip: '播放线路',
+            onPressed: _showLineSheet,
           ),
           IconButton(
             icon: const Icon(Icons.menu_open_rounded, color: Colors.white),

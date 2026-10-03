@@ -5,11 +5,21 @@ import '../models/drama.dart';
 import '../models/episode.dart';
 import '../network/http_client.dart';
 import '../utils/json_utils.dart';
+import 'api52_source.dart';
+import 'maccms_source.dart';
+import 'play_lines.dart';
+import 'settings_service.dart';
 
 /// 红果短剧官方网页源业务 API：首页信息流 / 搜索 / 详情 / 播放源
 ///
 /// 数据源为 hongguoduanju.com 官方网页 SSR 数据（window._ROUTER_DATA）。
 /// 官方硬限制：每部剧仅前 [ApiConstants.accessibleEpisodeCount] 集可播。
+///
+/// 分派规则（见 [SettingsService.dataSource]）：
+/// - `line:<id>`：首页/分类/榜单/搜索/详情/播放全部走该 maccms 站点
+/// - `api52`：搜索/详情/播放走第三方红果聚合源，信息流/分类/榜单仍走官方
+/// - `web`：全部走官方网页源
+/// - 详情/播放按 ID 前缀（`mg:`/`a52:`）分派，切源后已打开的页面仍可用
 class ApiService {
   ApiService._();
 
@@ -20,6 +30,8 @@ class ApiService {
   /// [page] 为 0 时返回首页全部分区（banner + 4 个 homeSection）合并去重结果；
   /// [page] >= 1 时按序轮询各分类页分页数据，保证持续有新内容。
   static Future<List<Drama>> fetchHomeFeed({required int page}) async {
+    final site = MaccmsSource.current();
+    if (site != null) return site.homeFeed(page);
     if (page == 0) {
       final loader = await HttpClient.getSsrJson(ApiConstants.pathHome,
           loaderKeyPattern: r'(^|/)page$|^page$');
@@ -59,6 +71,8 @@ class ApiService {
     required String slug,
     required int page,
   }) async {
+    final site = MaccmsSource.current();
+    if (site != null) return site.category(slug, page);
     for (var attempt = 0; attempt < 3; attempt++) {
       final loader = await HttpClient.getSsrJson(
         ApiConstants.pathCategory(slug, page),
@@ -88,6 +102,8 @@ class ApiService {
   /// 这里最多重试 5 次，仍缺失才抛错。
   static Future<({String updatedText, List<Drama> items, int totalPages})>
       fetchRank({required String slug, int page = 1}) async {
+    final site = MaccmsSource.current();
+    if (site != null) return site.rank(slug, page);
     for (var attempt = 0; attempt < 5; attempt++) {
       final loader = await HttpClient.getSsrJson(
         ApiConstants.pathRank(slug, page),
@@ -114,11 +130,37 @@ class ApiService {
     throw Exception('榜单数据缺失: $slug page=$page');
   }
 
+  // ==================== 分类/榜单 tab ====================
+
+  /// 分类页 tab：`slug -> 中文名`（站点模式取该站 `class` 全站分类）
+  static Future<Map<String, String>> fetchCategoryLabels() async {
+    final site = MaccmsSource.current();
+    if (site == null) return ApiConstants.categoryLabels;
+    return site.categoryTabs();
+  }
+
+  /// 排行榜 tab：`slug -> 中文名`（站点模式为 `hot:<type_id>` 按热度倒序）
+  static Future<Map<String, String>> fetchRankLabels() async {
+    final site = MaccmsSource.current();
+    if (site == null) return ApiConstants.rankLabels;
+    final tabs = await site.categoryTabs();
+    final out = <String, String>{};
+    for (final e in tabs.entries) {
+      if (out.length >= 4) break;
+      out['hot:${e.key}'] = '${e.value}榜';
+    }
+    if (out.isEmpty) out['hot:5'] = '短剧榜';
+    return out;
+  }
+
   // ==================== 搜索 ====================
 
   /// 关键词搜索短剧。
   /// 官方网页搜索每页固定 10 条且分页参数不生效，仅返回首屏结果。
   static Future<List<Drama>> search({required String keyword}) async {
+    final site = MaccmsSource.current();
+    if (site != null) return site.search(keyword);
+    if (Api52Source.enabled) return Api52Source.search(keyword);
     final loader = await HttpClient.getSsrJson(
       ApiConstants.pathSearch(keyword),
       loaderKeyPattern: r'search_',
@@ -141,6 +183,15 @@ class ApiService {
   /// 详情数据：短剧信息 + 全部分集 + 详情页推荐
   static Future<({Drama? drama, List<Episode> episodes, List<Drama> related})>
       fetchDetail(String seriesId) async {
+    // 前缀分派：整站源/聚合源的条目用自带 ID 还原，不依赖当前数据源选择
+    if (MaccmsSource.hasPrefix(seriesId)) {
+      final site = MaccmsSource.byId(seriesId);
+      if (site == null) throw Exception('站点线路已变更，请返回后重试');
+      return site.detail(seriesId);
+    }
+    if (Api52Source.hasPrefix(seriesId)) {
+      return Api52Source.detail(seriesId);
+    }
     final loader = await HttpClient.getSsrJson(
       ApiConstants.pathDetail(seriesId),
       loaderKeyPattern: r'detail',
@@ -155,10 +206,8 @@ class ApiService {
     final drama = Drama.fromJson(detailMap) ??
         Drama.fromJson({...detailMap, 'series_id': seriesId});
 
-    // 分集：vid_list 为完整集数列表（含官方锁定集）
-    final accessible =
-        JsonUtils.i(detailMap, const ['accessible_episode_cnt']) ??
-            ApiConstants.accessibleEpisodeCount;
+    // 分集：vid_list 为完整集数列表
+    // playable 恒为 true：前 3 集走官方直链，后续集数由全集源兜底（见 fetchPlayUrl）
     final vidList = detailMap['vid_list'];
     final episodes = <Episode>[];
     if (vidList is List) {
@@ -170,7 +219,6 @@ class ApiService {
           itemId: vid,
           index: index,
           title: '第$index集',
-          playable: index <= accessible,
         ));
         index++;
       }
@@ -196,23 +244,72 @@ class ApiService {
 
   // ==================== 播放源 ====================
 
-  /// 获取单集直链 MP4 播放地址（官方网页播放页 video_player_info.main_url）
+  /// 获取单集播放地址。
+  ///
+  /// 1. 手动锁定线路（见 [SettingsService.pinnedLineId]）→ 只走该线路；
+  /// 2. 默认 → 官方网页直链 MP4（前 [ApiConstants.accessibleEpisodeCount] 集可用）；
+  /// 3. 官方无直链 → 内置线路按测速分批竞速，取最快成功者（见 [PlayLineResolver]）。
   static Future<String> fetchPlayUrl({
     required String seriesId,
     required String vid,
+    String? title,
+    int? episodeIndex,
   }) async {
-    final loader = await HttpClient.getSsrJson(
-      ApiConstants.pathPlayer(seriesId, vid),
-      loaderKeyPattern: r'player_',
-    );
-    final info = loader?['video_player_info'];
-    if (info is Map) {
-      final mainUrl = info['main_url']?.toString();
-      if (mainUrl != null && mainUrl.startsWith('http')) return mainUrl;
+    // 整站源分集：按 ID 内嵌的源组/集序号取该站精确直链
+    if (MaccmsSource.hasPrefix(vid)) {
+      final site = MaccmsSource.byId(vid);
+      if (site != null) {
+        try {
+          return await site.playUrl(vid);
+        } catch (e) {
+          debugPrint('站点取链失败，转线路竞速: $e');
+          if (title != null && episodeIndex != null) {
+            return PlayLineResolver.resolve(
+                title: title, episodeIndex: episodeIndex);
+          }
+          rethrow;
+        }
+      }
     }
-    // 兜底：递归探测直链
-    final direct = JsonUtils.findFirstStringContaining(loader, '.mp4');
-    if (direct != null && direct.startsWith('http')) return direct;
+    // 第三方红果聚合源分集
+    if (Api52Source.hasPrefix(vid)) return Api52Source.play(vid);
+
+    final pinned = _pinnedLineId();
+
+    // 手动锁定：跳过官方源，严格按所选线路解析
+    if (pinned.isNotEmpty && title != null && episodeIndex != null) {
+      return PlayLineResolver.resolve(title: title, episodeIndex: episodeIndex);
+    }
+
+    try {
+      final loader = await HttpClient.getSsrJson(
+        ApiConstants.pathPlayer(seriesId, vid),
+        loaderKeyPattern: r'player_',
+      );
+      final info = loader?['video_player_info'];
+      if (info is Map) {
+        final mainUrl = info['main_url']?.toString();
+        if (mainUrl != null && mainUrl.startsWith('http')) return mainUrl;
+      }
+      // 兜底：递归探测直链
+      final direct = JsonUtils.findFirstStringContaining(loader, '.mp4');
+      if (direct != null && direct.startsWith('http')) return direct;
+      throw Exception('官方播放页无直链');
+    } catch (e) {
+      debugPrint('官方播放页取链失败，转内置线路: $e');
+    }
+
+    if (title != null && episodeIndex != null) {
+      return PlayLineResolver.resolve(title: title, episodeIndex: episodeIndex);
+    }
     throw Exception('未获取到播放地址');
+  }
+
+  static String _pinnedLineId() {
+    try {
+      return SettingsService.pinnedLineId;
+    } catch (_) {
+      return '';
+    }
   }
 }

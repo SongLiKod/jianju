@@ -29,6 +29,7 @@ class _CategoryPageState extends State<CategoryPage>
   final ScrollController _scroll = ScrollController();
 
   String _slug = ApiConstants.categorySlugs.first;
+  Map<String, String> _labels = ApiConstants.categoryLabels;
   bool _loading = true;
   bool _loadingMore = false;
   bool _error = false;
@@ -41,12 +42,30 @@ class _CategoryPageState extends State<CategoryPage>
   @override
   void initState() {
     super.initState();
-    _refresh();
+    _boot();
     _scroll.addListener(() {
       if (_scroll.position.pixels > _scroll.position.maxScrollExtent - 400) {
         _loadMore();
       }
     });
+  }
+
+  /// 启动/重试入口：先取当前数据源的分类 tab（站点模式为该站全站分类），
+  /// 再拉第一页内容
+  Future<void> _boot() async {
+    try {
+      final labels = await ApiService.fetchCategoryLabels();
+      if (!mounted) return;
+      if (labels.isNotEmpty) {
+        setState(() {
+          _labels = labels;
+          if (!labels.containsKey(_slug)) _slug = labels.keys.first;
+        });
+      }
+    } catch (e) {
+      debugPrint('分类 tab 加载失败: $e');
+    }
+    await _refresh();
   }
 
   @override
@@ -132,7 +151,7 @@ class _CategoryPageState extends State<CategoryPage>
         children: [
           _SlugBar(
             slug: _slug,
-            labels: ApiConstants.categoryLabels,
+            labels: _labels,
             seed: seed,
             onChanged: _switchSlug,
           ),
@@ -144,7 +163,7 @@ class _CategoryPageState extends State<CategoryPage>
 
   Widget _buildGrid(BuildContext context) {
     if (_loading && _list.isEmpty) return const LoadingView();
-    if (_error) return ErrorRetryView(onRetry: _refresh);
+    if (_error) return ErrorRetryView(onRetry: _boot);
     if (_list.isEmpty) return const EmptyView(message: '该分类暂无内容');
 
     return RefreshIndicator(

@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/cache_service.dart';
 import '../../core/services/device_service.dart';
+import '../../core/services/play_lines.dart';
 import '../../core/services/token_service.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
@@ -14,9 +15,10 @@ import '../../core/theme/app_theme.dart';
 ///
 /// 1. 主题设置区域：明暗模式切换 + 自定义APP主题主色选择
 /// 2. 播放器全局默认配置区域：默认播放倍速 0.75x ~ 5x
-/// 3. 缓存管理区域：查看/一键清除图片缓存
-/// 4. 账号与设备区域：重置设备 ID / 退出登录（清除token）
-/// 5. 关于页面区域：项目版本信息
+/// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置 + 整站站点列表
+/// 4. 缓存管理区域：查看/一键清除图片缓存
+/// 5. 账号与设备区域：重置设备 ID / 退出登录（清除token）
+/// 6. 关于页面区域：项目版本信息
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -217,7 +219,95 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
 
-          // ==================== 3. 缓存管理区域 ====================
+          // ==================== 3. 数据源区域 ====================
+          _sectionTitle('数据源'),
+          _groupContainer(
+            isDark,
+            children: [
+              _sourceTile(
+                context,
+                icon: Icons.language_rounded,
+                label: '官方网页源',
+                desc: '红果官网 · 免配置 · 前 3 集可播',
+                selected:
+                    settings.dataSource == AppConstants.dataSourceWeb,
+                seed: seed,
+                onTap: () => context
+                    .read<SettingsProvider>()
+                    .setDataSource(AppConstants.dataSourceWeb),
+              ),
+              const Divider(indent: 16),
+              _sourceTile(
+                context,
+                icon: Icons.cloud_outlined,
+                label: '52api 红果源',
+                desc: '全集可播 · 需 apikey',
+                selected:
+                    settings.dataSource == AppConstants.dataSourceApi52,
+                seed: seed,
+                onTap: () async {
+                  final provider = context.read<SettingsProvider>();
+                  if (!provider.hasApi52Key) {
+                    final saved = await _editApiKey();
+                    if (saved != true) return;
+                  }
+                  await provider.setDataSource(AppConstants.dataSourceApi52);
+                },
+              ),
+              const Divider(indent: 16),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.vpn_key_outlined,
+                    color: outline, size: 22),
+                title: const Text('52api apikey',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  settings.hasApi52Key
+                      ? '已配置 ${_maskKey(settings.apiKey52)}'
+                      : '未配置（52api.cn 注册开通红果接口）',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                trailing: Icon(Icons.edit_outlined,
+                    color: outline.withValues(alpha: 0.6), size: 20),
+                onTap: _editApiKey,
+              ),
+            ],
+          ),
+
+          // ==================== 3.5 整站站点（maccms API 站） ====================
+          _sectionTitle('整站站点'),
+          _groupContainer(
+            isDark,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                child: Text(
+                  '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站点'
+                  '（仅列出提供标准接口的站点）',
+                  style: TextStyle(fontSize: 12, color: outline, height: 1.4),
+                ),
+              ),
+              for (final line in kPlayLines)
+                if (line.mode == PlayLineMode.api) ...[
+                  const Divider(indent: 16),
+                  _sourceTile(
+                    context,
+                    icon: Icons.dns_outlined,
+                    label: line.name,
+                    desc: '整站数据源 · 首页/搜索/详情/播放全走该站',
+                    selected: settings.dataSource ==
+                        AppConstants.dataSourceOfLine(line.id),
+                    seed: seed,
+                    onTap: () => context
+                        .read<SettingsProvider>()
+                        .setDataSource(AppConstants.dataSourceOfLine(line.id)),
+                  ),
+                ],
+            ],
+          ),
+
+          // ==================== 4. 缓存管理区域 ====================
           _sectionTitle('缓存管理'),
           _groupContainer(
             isDark,
@@ -249,7 +339,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
 
-          // ==================== 4. 账号与设备区域 ====================
+          // ==================== 5. 账号与设备区域 ====================
           _sectionTitle('账号与设备'),
           _groupContainer(
             isDark,
@@ -283,7 +373,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
 
-          // ==================== 5. 关于页面区域 ====================
+          // ==================== 6. 关于页面区域 ====================
           _sectionTitle('关于'),
           _groupContainer(
             isDark,
@@ -458,5 +548,86 @@ class _SettingsPageState extends State<SettingsPage> {
   static String _speedText(double s) {
     if (s == s.roundToDouble()) return '${s.toInt()}.0x';
     return '${s}x';
+  }
+
+  // ==================== 数据源 ====================
+
+  Widget _sourceTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String desc,
+    required bool selected,
+    required Color seed,
+    required VoidCallback onTap,
+  }) {
+    final outline = Theme.of(context).colorScheme.outline;
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      leading: Icon(icon, size: 22, color: selected ? seed : outline),
+      title: Text(label,
+          style: TextStyle(
+              fontSize: 15,
+              color: selected ? seed : null,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+      subtitle: Text(desc, style: TextStyle(fontSize: 12, color: outline)),
+      trailing: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: 20,
+        height: 20,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected ? seed : outline.withValues(alpha: 0.5),
+            width: selected ? 6 : 1.5,
+          ),
+        ),
+      ),
+      onTap: onTap,
+    );
+  }
+
+  /// 编辑/清除 52api apikey，返回是否保存成功
+  Future<bool> _editApiKey() async {
+    final controller =
+        TextEditingController(text: context.read<SettingsProvider>().apiKey52);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('52api apikey', style: TextStyle(fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 1,
+          decoration: const InputDecoration(
+            hintText: '粘贴 apikey（52api.cn 开通红果接口后获取）',
+            helperText: '留空保存即清除',
+            isDense: true,
+          ),
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    final key = controller.text.trim();
+    controller.dispose();
+    if (saved != true) return false;
+    if (!mounted) return true;
+    await context.read<SettingsProvider>().setApiKey52(key);
+    if (!mounted) return true;
+    _toast(key.isEmpty ? 'apikey 已清除' : 'apikey 已保存');
+    return true;
+  }
+
+  static String _maskKey(String key) {
+    if (key.length <= 8) return '****';
+    return '${key.substring(0, 4)}****${key.substring(key.length - 4)}';
   }
 }

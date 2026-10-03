@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/state/settings_provider.dart';
 import '../core/state/theme_provider.dart';
 import '../core/theme/app_theme.dart';
 import '../widgets/floating_nav_bar.dart';
@@ -30,10 +31,13 @@ class _RootPageState extends State<RootPage> {
   @override
   Widget build(BuildContext context) {
     final primary = context.watch<ThemeProvider>();
+    final source = context.watch<SettingsProvider>().dataSource;
     final seed = AppPalette.colors[primary.colorIndex].color;
     return Scaffold(
       extendBody: true,
+      // 数据源切换后整树重建：四个 Tab 全部按新站点重新拉数据
       body: IndexedStack(
+        key: ValueKey(source),
         index: _index,
         children: const [
           HomePage(),

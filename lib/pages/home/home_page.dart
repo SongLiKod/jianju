@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/constants/app_constants.dart';
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
+import '../../core/services/play_lines.dart';
+import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../widgets/drama_card.dart';
@@ -122,6 +125,42 @@ class _HomePageState extends State<HomePage>
           ],
         ),
         actions: [
+          // 数据源/站点切换：整站模式下首页、分类、榜单、搜索全部跟随所选站点
+          PopupMenuButton<String>(
+            tooltip: '切换数据源',
+            icon: const Icon(Icons.dns_outlined),
+            onSelected: (v) =>
+                context.read<SettingsProvider>().setDataSource(v),
+            itemBuilder: (context) {
+              final current =
+                  context.read<SettingsProvider>().dataSource;
+              return [
+                CheckedPopupMenuItem<String>(
+                  value: AppConstants.dataSourceWeb,
+                  checked:
+                      current == AppConstants.dataSourceWeb,
+                  child: const Text('官方网页源'),
+                ),
+                CheckedPopupMenuItem<String>(
+                  value: AppConstants.dataSourceApi52,
+                  checked:
+                      current == AppConstants.dataSourceApi52,
+                  child: const Text('52api 红果源'),
+                ),
+                const PopupMenuDivider(),
+                for (final line in kPlayLines)
+                  if (line.mode == PlayLineMode.api)
+                    CheckedPopupMenuItem<String>(
+                      value:
+                          AppConstants.dataSourceOfLine(line.id),
+                      checked:
+                          current ==
+                              AppConstants.dataSourceOfLine(line.id),
+                      child: Text(line.name),
+                    ),
+              ];
+            },
+          ),
           IconButton(
             tooltip: '搜索',
             icon: const Icon(Icons.search_rounded),
