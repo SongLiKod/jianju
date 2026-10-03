@@ -1,0 +1,177 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/models/drama.dart';
+import '../../core/services/api_service.dart';
+import '../../core/state/theme_provider.dart';
+import '../../core/theme/app_theme.dart';
+import '../../widgets/drama_card.dart';
+import '../../widgets/state_views.dart';
+import '../detail/detail_page.dart';
+
+/// 首页：推荐信息流
+/// 1. 拉取红果短剧官方首页分区推荐 + 分类分页
+/// 2. 网页源无广告卡片，纯净展示正规短剧
+/// 3. 下拉分页加载更多短剧
+/// 4. 展示封面、标题、简介、集数、热度
+/// 5. 点击卡片进入短剧详情页
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage>
+    with AutomaticKeepAliveClientMixin {
+  final List<Drama> _list = [];
+  final ScrollController _scroll = ScrollController();
+
+  bool _loading = true;
+  bool _loadingMore = false;
+  bool _error = false;
+  bool _hasMore = true;
+  int _page = 0;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _scroll.addListener(() {
+      if (_scroll.position.pixels >
+          _scroll.position.maxScrollExtent - 400) {
+        _loadMore();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    // 初始加载/下拉刷新/失败重试共用；首次加载时 _loading 已为 true
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
+    try {
+      final items = await ApiService.fetchHomeFeed(page: 0);
+      if (!mounted) return;
+      debugPrint('首页推荐加载: ${items.length} 条');
+      setState(() {
+        _list
+          ..clear()
+          ..addAll(items);
+        _page = 1;
+        _hasMore = true;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('首页推荐加载失败: $e');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = _list.isEmpty;
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loading || _loadingMore || !_hasMore || _error) return;
+    setState(() => _loadingMore = true);
+    try {
+      final items = await ApiService.fetchHomeFeed(page: _page);
+      if (!mounted) return;
+      setState(() {
+        // 去重（信息流可能重复推荐）
+        final ids = _list.map((d) => d.bookId).toSet();
+        for (final d in items) {
+          if (ids.add(d.bookId)) _list.add(d);
+        }
+        _page++;
+        _hasMore = items.isNotEmpty;
+        _loadingMore = false;
+      });
+    } catch (e) {
+      debugPrint('首页加载更多失败: $e');
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final seed = AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.play_circle_fill_rounded, color: seed, size: 22),
+            const SizedBox(width: 6),
+            const Text('简剧'),
+          ],
+        ),
+      ),
+      body: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    if (_loading && _list.isEmpty) return const LoadingView();
+    if (_error) {
+      return ErrorRetryView(onRetry: _refresh);
+    }
+    if (_list.isEmpty) {
+      return const EmptyView(message: '暂无推荐内容');
+    }
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView.builder(
+        controller: _scroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        // 底部留出悬浮导航条空间
+        padding: EdgeInsets.only(
+          top: 6,
+          bottom: MediaQuery.paddingOf(context).bottom + 96,
+        ),
+        itemCount: _list.length + (_hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          if (index >= _list.length) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 18),
+              child: _loadingMore
+                  ? const Center(
+                      child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2.2),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            );
+          }
+          final drama = _list[index];
+          return DramaCard(
+            drama: drama,
+            onTap: () => _openDetail(drama),
+          );
+        },
+      ),
+    );
+  }
+
+  void _openDetail(Drama drama) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => DetailPage(bookId: drama.bookId)),
+    );
+  }
+}
