@@ -8,6 +8,7 @@ import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../favorites/favorites_page.dart';
 import '../history/history_page.dart';
+import '../settings/settings_page.dart';
 
 /// 我的：本地收藏 / 观看历史入口（数据仅保存在本地）
 class MinePage extends StatelessWidget {
@@ -70,6 +71,14 @@ class MinePage extends StatelessWidget {
             subtitle: historyCount == 0 ? '暂无观看记录' : '共 $historyCount 条记录',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const HistoryPage()),
+            ),
+          ),
+          _Tile(
+            icon: Icons.settings_outlined,
+            title: '设置',
+            subtitle: '主题、播放与数据清理',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsPage()),
             ),
           ),
         ],

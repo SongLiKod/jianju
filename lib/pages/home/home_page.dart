@@ -8,6 +8,7 @@ import '../../core/theme/app_theme.dart';
 import '../../widgets/drama_card.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
+import '../search/search_page.dart';
 
 /// 首页：推荐信息流
 /// 1. 拉取红果短剧官方首页分区推荐 + 分类分页
@@ -120,6 +121,15 @@ class _HomePageState extends State<HomePage>
             const Text('简剧'),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: '搜索',
+            icon: const Icon(Icons.search_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SearchPage()),
+            ),
+          ),
+        ],
       ),
       body: _buildBody(context),
     );

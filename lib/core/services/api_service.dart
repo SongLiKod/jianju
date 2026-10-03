@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../constants/api_constants.dart';
 import '../models/drama.dart';
 import '../models/episode.dart';
@@ -57,17 +59,59 @@ class ApiService {
     required String slug,
     required int page,
   }) async {
-    final loader = await HttpClient.getSsrJson(
-      ApiConstants.pathCategory(slug, page),
-      loaderKeyPattern: r'category_',
-    );
-    final list = loader?['recommendList'];
-    if (list is! List) return const [];
-    return list
-        .whereType<Map>()
-        .map(Drama.fromJson)
-        .whereType<Drama>()
-        .toList();
+    for (var attempt = 0; attempt < 3; attempt++) {
+      final loader = await HttpClient.getSsrJson(
+        ApiConstants.pathCategory(slug, page),
+        loaderKeyPattern: r'category_',
+      );
+      final list = loader?['recommendList'];
+      if (list is List) {
+        return list
+            .whereType<Map>()
+            .map(Drama.fromJson)
+            .whereType<Drama>()
+            .toList();
+      }
+      debugPrint('分类载荷缺失，重试 ${attempt + 1}/3: $slug page=$page');
+      await Future<void>.delayed(Duration(milliseconds: 400 * (1 << attempt)));
+    }
+    return const [];
+  }
+
+  // ==================== 排行榜 ====================
+
+  /// 榜单列表（榜单标识见 [ApiConstants.rankSlugs]）。
+  ///
+  /// 返回榜单更新说明、条目与总页数（每页 20 条，见 content.pagination）。
+  ///
+  /// 官网榜单页的 SSR 载荷有时缺 content（同一 URL 重取即可拿到，约五成命中），
+  /// 这里最多重试 5 次，仍缺失才抛错。
+  static Future<({String updatedText, List<Drama> items, int totalPages})>
+      fetchRank({required String slug, int page = 1}) async {
+    for (var attempt = 0; attempt < 5; attempt++) {
+      final loader = await HttpClient.getSsrJson(
+        ApiConstants.pathRank(slug, page),
+        loaderKeyPattern: r'rank_',
+      );
+      final updatedText = loader?['updatedText']?.toString() ?? '';
+      final content = loader?['content'];
+      if (content is Map && content['rankList'] is List) {
+        final items = <Drama>[];
+        for (final e in content['rankList'] as List) {
+          if (e is! Map) continue;
+          final d = Drama.fromJson(e);
+          if (d != null) items.add(d);
+        }
+        final pagination = content['pagination'];
+        final totalPages = pagination is Map
+            ? JsonUtils.i(pagination, const ['totalPages']) ?? 1
+            : 1;
+        return (updatedText: updatedText, items: items, totalPages: totalPages);
+      }
+      debugPrint('榜单载荷缺失，重试 ${attempt + 1}/5: $slug page=$page');
+      await Future<void>.delayed(Duration(milliseconds: 300 * (attempt + 1)));
+    }
+    throw Exception('榜单数据缺失: $slug page=$page');
   }
 
   // ==================== 搜索 ====================

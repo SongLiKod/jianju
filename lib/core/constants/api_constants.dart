@@ -27,6 +27,17 @@ class ApiConstants {
   static String pathPlayer(String seriesId, String vid) =>
       '/player/$seriesId/$vid/';
 
+  /// 排行榜：{slug} 为榜单标识，?page=N 分页（每页 20 条）
+  ///
+  /// 第 1 页省略 page 参数（官网对 ?page=1 回 301 归一化，多一次往返）；
+  /// 附带 cb 随机参数绕开边缘缓存——榜单页 SSR 偶尔返回不含数据的空壳。
+  static String pathRank(String slug, int page) {
+    final cb = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    return page <= 1
+        ? '/rank/$slug?cb=$cb'
+        : '/rank/$slug?page=$page&cb=$cb';
+  }
+
   // ==================== 分类标识 ====================
   static const List<String> categorySlugs = [
     'real-drama', // 真人短剧
@@ -34,6 +45,30 @@ class ApiConstants {
     'ai-drama', // AI 短剧
     'comic', // 动态漫
   ];
+
+  /// 分类中文名（与 [categorySlugs] 一一对应）
+  static const Map<String, String> categoryLabels = {
+    'real-drama': '真人剧',
+    'comic-drama': '漫剧',
+    'ai-drama': 'AI短剧',
+    'comic': '动态漫',
+  };
+
+  // ==================== 排行榜标识 ====================
+  static const List<String> rankSlugs = [
+    'hot-drama', // 总榜
+    'hot-real-drama', // 真人榜
+    'hot-comic-drama', // 漫剧榜
+    'hot-ai-drama', // AI榜
+  ];
+
+  /// 排行榜中文名（与 [rankSlugs] 一一对应）
+  static const Map<String, String> rankLabels = {
+    'hot-drama': '总榜',
+    'hot-real-drama': '真人榜',
+    'hot-comic-drama': '漫剧榜',
+    'hot-ai-drama': 'AI榜',
+  };
 
   // ==================== 请求头 ====================
   /// 浏览器 UA（网页源要求，否则部分页面返回空壳）

@@ -82,6 +82,7 @@ class _SearchPageState extends State<SearchPage>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return TextField(
       controller: _controller,
+      autofocus: true,
       textInputAction: TextInputAction.search,
       onSubmitted: _submit,
       style: TextStyle(color: isDark ? Colors.white : const Color(0xFF1C1C1E)),

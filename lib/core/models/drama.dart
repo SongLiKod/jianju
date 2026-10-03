@@ -11,7 +11,8 @@ class Drama {
   final String abstractText;
   final List<String> tags;
   final int episodeCount;
-  final String readCountText; // 热度（如 "10.2万人看"）
+  final String readCountText; // 热度（如 "12586万热度"）
+  final String scoreText; // 评分（如 "评分9.2"，榜单专用）
   final String statusText; // 完结/连载
   final String categoryText;
 
@@ -23,6 +24,7 @@ class Drama {
     required this.tags,
     required this.episodeCount,
     required this.readCountText,
+    this.scoreText = '',
     required this.statusText,
     required this.categoryText,
   });
@@ -30,7 +32,7 @@ class Drama {
   /// 容错解析：字段名随页面结构可能不同，全部做多候选兼容
   static Drama? fromJson(Map<dynamic, dynamic> m) {
     final bookId =
-        JsonUtils.s(m, const ['series_id', 'book_id', 'bookId']);
+        JsonUtils.s(m, const ['series_id', 'seriesId', 'book_id', 'bookId', 'id']);
     if (bookId == null || bookId.isEmpty) return null;
     final title = JsonUtils.s(m, const [
           'series_title',
@@ -59,9 +61,21 @@ class Drama {
 
     final epCount = JsonUtils.i(
         m, const ['episode_cnt', 'chapter_count', 'episode_count', 'serial_count']);
+    // 排行榜条目没有集数字段，用分集 vid 列表长度兜底
+    var episodeCount = epCount;
+    if (episodeCount == null) {
+      for (final key in const ['vid_list', 'episodeVids']) {
+        final raw = m[key];
+        if (raw is List && raw.isNotEmpty) {
+          episodeCount = raw.length;
+          break;
+        }
+      }
+    }
+
     final read = JsonUtils.s(m, const [
-      'read_count_text', 'read_count', 'read_cnt_text', 'hot_val_text',
-      'heat_text', 'rank_text',
+      'heatText', 'read_count_text', 'read_count', 'read_cnt_text',
+      'hot_val_text', 'heat_text', 'rank_text',
     ]);
 
     // 状态：episode_right_text（如"全209集"）/ series_status / creation_status
@@ -75,12 +89,18 @@ class Drama {
         status = '连载';
       }
     }
+    if (status.isEmpty) {
+      final rawTags = m['statusTags'];
+      if (rawTags is List && rawTags.isNotEmpty) {
+        status = rawTags.map((e) => '$e').join('·');
+      }
+    }
 
     return Drama(
       bookId: bookId,
       title: title,
       coverUrl:
-          JsonUtils.s(m, const ['series_cover', 'thumb_url', 'cover_url', 'thumb']) ??
+          JsonUtils.s(m, const ['series_cover', 'cover', 'thumb_url', 'cover_url', 'thumb']) ??
               '',
       abstractText: JsonUtils.s(m, const [
             'series_intro',
@@ -88,11 +108,13 @@ class Drama {
             'abstract_plain',
             'desc',
             'description',
+            'summary',
           ]) ??
           '',
       tags: tags.where((t) => t.isNotEmpty).toSet().toList(),
-      episodeCount: epCount ?? 0,
+      episodeCount: episodeCount ?? 0,
       readCountText: read ?? '',
+      scoreText: JsonUtils.s(m, const ['scoreText', 'score']) ?? '',
       statusText: status,
       categoryText: cat?.toString() ?? '',
     );
@@ -106,6 +128,7 @@ class Drama {
         'category_list': tags,
         'episode_cnt': episodeCount,
         'read_count_text': readCountText,
+        'scoreText': scoreText,
         'episode_right_text': statusText,
         'category': categoryText,
       };
