@@ -630,7 +630,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!mounted || seq != _openSeq) return;
       await _applyMpvTweaks();
       if (!mounted || seq != _openSeq) return;
-      await _player.open(Media(playUrl));
+      // 网络流先改写为去广告清单：中插广告段会让 mpv 把流重启回 00:00
+      // （"跳回开始播放"死循环，实测自然播放/seek 进广告段必触发）。
+      // 本地 .ts/.mp4 及无广告清单会返回 null，原样起播。
+      final rewritten = await PrebufferService.rewritePlaylist(playUrl);
+      if (!mounted || seq != _openSeq) return;
+      await _player.open(Media(rewritten ?? playUrl));
       if (!mounted || seq != _openSeq) return;
       await _player.setRate(_speed);
       if (!mounted || seq != _openSeq) return;

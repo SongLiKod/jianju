@@ -348,6 +348,142 @@ class PrebufferService {
     return null;
   }
 
+  /// 起播用清单改写：剔除中插广告段，生成本地 .m3u8（分片为绝对 URL）。
+  ///
+  /// 中插广告段（异目录、10Mbps/1080p）会让 mpv 播放中/seek 时把流重启回
+  /// 00:00——实测"跳回开始播放"死循环全部发生在进入广告段的一瞬（自然
+  /// 播放、恢复 seek、进度 seek 无一幸免），而分片本身用任意 UA 都能完整
+  /// 下载，属 mpv(ffmpeg HLS) 对该 CDN 广告段的处理缺陷，无法用 mpv 参数
+  /// 绕开。让 mpv 只读去广告清单即可根治：无广告、非 HLS、改写失败一律
+  /// 返回 null（原样起播，行为不变）。
+  static Future<String?> rewritePlaylist(String url) async {
+    try {
+      if (!url.toLowerCase().contains('.m3u8')) return null;
+      final client =
+          HttpClient()..connectionTimeout = const Duration(seconds: 15);
+      try {
+        var listUrl = url;
+        var body = '';
+        for (var hop = 0; hop < 3; hop++) {
+          body = await _fetchText(listUrl, client);
+          final variant = _firstVariant(body);
+          if (variant == null) break;
+          listUrl = Uri.parse(listUrl).resolve(variant).toString();
+        }
+        if (body.isEmpty) return null;
+
+        // 解析：header（首个分片前的标签）+ 有序条目（pre 标签/EXTINF/
+        // mid 标签/绝对 URL）+ tail（末尾标签如 ENDLIST）
+        final header = <String>[];
+        final entries = <_PlEntry>[];
+        var pre = <String>[];
+        String? extinf;
+        var mid = <String>[];
+        for (final raw in body.split('\n')) {
+          final l = raw.trim();
+          if (l.isEmpty) continue;
+          if (l.startsWith('#')) {
+            if (l.toUpperCase().startsWith('#EXTINF')) {
+              if (extinf == null) {
+                extinf = l;
+              } else {
+                pre.add(l);
+              }
+            } else if (extinf == null && entries.isEmpty) {
+              header.add(l);
+            } else if (extinf == null) {
+              pre.add(l); // 新分片的前导标签（#EXT-X-DISCONTINUITY 等）
+            } else {
+              mid.add(l); // EXTINF 之后、分片行之前的标签
+            }
+            continue;
+          }
+          entries.add(_PlEntry(
+            pre: pre,
+            extinf: extinf ?? '',
+            mid: mid,
+            url: Uri.parse(listUrl).resolve(l).toString(),
+          ));
+          pre = <String>[];
+          extinf = null;
+          mid = <String>[];
+        }
+        if (entries.isEmpty) return null;
+
+        // 按 #EXT-X-DISCONTINUITY 分块；目录（origin+路径）与首块不同的
+        // 非首块 = 中插贴片广告（与合并去广告同一判据）
+        final chunks = <List<_PlEntry>>[];
+        var current = <_PlEntry>[];
+        for (final e in entries) {
+          final startsBlock = e.pre.any(
+              (t) => t.toUpperCase().startsWith('#EXT-X-DISCONTINUITY'));
+          if (startsBlock && current.isNotEmpty) {
+            chunks.add(current);
+            current = <_PlEntry>[];
+          }
+          current.add(e);
+        }
+        if (current.isNotEmpty) chunks.add(current);
+        if (chunks.isEmpty) return null;
+
+        String dirOf(String abs) {
+          final u = Uri.parse(abs);
+          final p = u.path;
+          return '${u.origin}${p.substring(0, p.lastIndexOf('/') + 1)}';
+        }
+
+        final firstDir = dirOf(chunks.first.first.url);
+        final kept = <List<_PlEntry>>[];
+        var removed = 0;
+        for (var ci = 0; ci < chunks.length; ci++) {
+          final chunk = chunks[ci];
+          if (ci > 0 && dirOf(chunk.first.url) != firstDir) {
+            removed += chunk.length;
+            continue;
+          }
+          kept.add(chunk);
+        }
+        if (removed == 0 || kept.isEmpty) return null;
+
+        final out = StringBuffer()
+          ..write(header.join('\n'))
+          ..write('\n');
+        for (final chunk in kept) {
+          for (final e in chunk) {
+            for (final t in e.pre) {
+              out.write('$t\n');
+            }
+            if (e.extinf.isNotEmpty) out.write('${e.extinf}\n');
+            for (final t in e.mid) {
+              out.write('$t\n');
+            }
+            out.write('${e.url}\n');
+          }
+        }
+        for (final t in pre) {
+          out.write('$t\n');
+        }
+
+        final dir = await _dir();
+        final plDir = Directory('${dir.path}/playlists');
+        if (!await plDir.exists()) {
+          await plDir.create(recursive: true);
+        }
+        final file = File(
+            '${plDir.path}/h${url.hashCode.toRadixString(16)}.m3u8');
+        await file.writeAsString(out.toString(), flush: true);
+        debugPrint('[PBF] 起播清单已改写：剔除广告 $removed 片'
+            '（保留 ${entries.length - removed} 片）');
+        return file.path;
+      } finally {
+        client.close(force: true);
+      }
+    } catch (e) {
+      debugPrint('[PBF] 清单改写失败（原样起播）: $e');
+      return null;
+    }
+  }
+
   static Future<String> _fetchText(String url, HttpClient client) async {
     Object? last;
     for (var t = 0; t < 3; t++) {
@@ -502,6 +638,20 @@ class PrebufferService {
       }
     } catch (_) {}
   }
+}
+
+/// 清单改写的解析条目：前导标签 + EXTINF + 后置标签 + 绝对分片 URL
+class _PlEntry {
+  final List<String> pre;
+  final String extinf;
+  final List<String> mid;
+  final String url;
+
+  const _PlEntry(
+      {required this.pre,
+      required this.extinf,
+      required this.mid,
+      required this.url});
 }
 
 /// 内部格式化（避免依赖 CacheService 引入 flutter_cache_manager）

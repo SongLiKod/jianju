@@ -61,10 +61,17 @@ void main() {
       expect(fresh.slimProgress, isFalse);
     });
 
-    test('非法存储值回退默认（不在候选项内）', () async {
+    test('非法存储值回退默认（超出钳制范围）', () async {
       await SettingsService.setPreloadLeadSec(7); // 不在 [5,10,15,30,60]
-      await SettingsService.setBufferSecs(999); // 不在 [10,20,60,180]
       expect(SettingsService.preloadLeadSec, AppConstants.defaultPreloadLeadSec);
+
+      // 缓冲秒数做范围钳制（1~3600）而非列表校验：
+      // 自定义分钟数（60~3600，如 5 分钟=300）必须持久化，重启不丢
+      await SettingsService.setBufferSecs(300);
+      expect(SettingsService.bufferSecs, 300);
+      await SettingsService.setBufferSecs(0);
+      expect(SettingsService.bufferSecs, AppConstants.defaultBufferSecs);
+      await SettingsService.setBufferSecs(99999);
       expect(SettingsService.bufferSecs, AppConstants.defaultBufferSecs);
     });
   });
