@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
+import '../../core/services/search_history_service.dart';
 import '../../widgets/drama_card.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
@@ -10,6 +11,7 @@ import '../detail/detail_page.dart';
 /// 1. 顶部搜索框支持关键词搜索短剧
 /// 2. 搜索结果自动过滤广告条目（ApiService 内完成）
 /// 3. 结果样式与首页统一，点击进入详情
+/// 4. 搜索历史：点词重搜、单条删除、一键清空
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -39,6 +41,8 @@ class _SearchPageState extends State<SearchPage>
     final kw = (keyword ?? _controller.text).trim();
     if (kw.isEmpty || _searching) return;
     FocusScope.of(context).unfocus();
+    await SearchHistoryService.add(kw);
+    if (!mounted) return;
     setState(() {
       _keyword = kw;
       _searching = true;
@@ -101,7 +105,11 @@ class _SearchPageState extends State<SearchPage>
                     color: isDark ? Colors.white30 : Colors.black26),
                 onPressed: () {
                   _controller.clear();
-                  setState(() => _results.clear());
+                  setState(() {
+                    _keyword = '';
+                    _results.clear();
+                    _error = false;
+                  });
                 },
               ),
         isDense: true,
@@ -118,9 +126,7 @@ class _SearchPageState extends State<SearchPage>
         onRetry: () => _submit(_keyword),
       );
     }
-    if (_keyword.isEmpty) {
-      return const EmptyView(message: '输入关键词开始搜索');
-    }
+    if (_keyword.isEmpty) return _buildHistory();
     if (_results.isEmpty) {
       return const EmptyView(message: '没有找到相关短剧');
     }
@@ -151,5 +157,98 @@ class _SearchPageState extends State<SearchPage>
         );
       },
     );
+  }
+
+  // ==================== 搜索历史 ====================
+
+  Widget _buildHistory() {
+    final items = SearchHistoryService.items;
+    if (items.isEmpty) {
+      return const EmptyView(message: '输入关键词开始搜索');
+    }
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return ListView(
+      padding: EdgeInsets.only(
+        top: 10,
+        left: 16,
+        right: 16,
+        bottom: MediaQuery.paddingOf(context).bottom + 96,
+      ),
+      children: [
+        Row(
+          children: [
+            Text('搜索历史',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).colorScheme.outline)),
+            const Spacer(),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: Colors.redAccent.withValues(alpha: 0.9),
+              ),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 17),
+              label: const Text('清空', style: TextStyle(fontSize: 13)),
+              onPressed: _clearHistory,
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final kw in items)
+              InputChip(
+                label: Text(kw, style: const TextStyle(fontSize: 13)),
+                backgroundColor: isDark
+                    ? Colors.white.withValues(alpha: 0.06)
+                    : Colors.black.withValues(alpha: 0.05),
+                deleteIconColor: isDark ? Colors.white38 : Colors.black38,
+                onPressed: () {
+                  _controller.text = kw;
+                  _submit(kw);
+                },
+                onDeleted: () async {
+                  await SearchHistoryService.remove(kw);
+                  debugPrint('[SEARCH] history removed: $kw');
+                  if (mounted) setState(() {});
+                },
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text('点击关键词重新搜索，点 × 删除单条',
+            style: TextStyle(
+                fontSize: 11.5,
+                color: Theme.of(context).colorScheme.outline)),
+        const SizedBox(height: 4),
+      ],
+    );
+  }
+
+  Future<void> _clearHistory() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清空搜索历史', style: TextStyle(fontSize: 17)),
+        content: const Text('将删除全部搜索历史记录，确定清空吗？',
+            style: TextStyle(fontSize: 14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('清空')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await SearchHistoryService.clear();
+    debugPrint('[SEARCH] history cleared');
+    if (mounted) setState(() {});
   }
 }

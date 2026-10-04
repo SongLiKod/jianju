@@ -469,30 +469,38 @@ class MaccmsSource {
     );
   }
 
+  /// 拉取站点 JSON；瞬时网络抖动（连接写失败/空响应）自动重试 1 次
   Future<Map<String, dynamic>?> _getJson(String query) async {
-    try {
-      final resp = await _dio.get<dynamic>(
-        '${line.base}/api.php/provide/vod/?$query',
-      );
-      final body = resp.data?.toString() ?? '';
-      if (body.isEmpty) {
-        debugPrint('[整站] ${line.name} 空响应: $query '
-            'HTTP ${resp.statusCode} headers=${resp.headers.map['content-type']}');
+    for (var attempt = 0;; attempt++) {
+      var retry = false;
+      try {
+        final resp = await _dio.get<dynamic>(
+          '${line.base}/api.php/provide/vod/?$query',
+        );
+        final body = resp.data?.toString() ?? '';
+        if (body.isEmpty) {
+          debugPrint('[整站] ${line.name} 空响应: $query '
+              'HTTP ${resp.statusCode} headers=${resp.headers.map['content-type']}');
+          retry = true;
+        } else {
+          final v = jsonDecode(body);
+          if (v is! Map) {
+            debugPrint('[整站] ${line.name} 非对象响应: $query -> ${v.runtimeType}');
+            retry = true;
+          } else {
+            return v.cast<String, dynamic>();
+          }
+        }
+      } on DioException catch (e) {
+        debugPrint(
+            '[整站] ${line.name} 请求失败: $query -> HTTP ${e.response?.statusCode} ${e.type.name} ${e.message}');
+        retry = true;
+      } catch (e) {
+        debugPrint('[整站] ${line.name} 响应解析失败: $query -> $e');
         return null;
       }
-      final v = jsonDecode(body);
-      if (v is! Map) {
-        debugPrint('[整站] ${line.name} 非对象响应: $query -> ${v.runtimeType}');
-        return null;
-      }
-      return v.cast<String, dynamic>();
-    } on DioException catch (e) {
-      debugPrint(
-          '[整站] ${line.name} 请求失败: $query -> HTTP ${e.response?.statusCode} ${e.type.name} ${e.message}');
-      return null;
-    } catch (e) {
-      debugPrint('[整站] ${line.name} 响应解析失败: $query -> $e');
-      return null;
+      if (attempt >= 1 || !retry) return null;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
     }
   }
 

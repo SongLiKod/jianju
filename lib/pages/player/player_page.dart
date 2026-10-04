@@ -39,10 +39,9 @@ class PlayerPage extends StatefulWidget {
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
+class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   late final Player _player;
   late final VideoController _controller;
-  late final Future<void> _mpvTweaks;
   StreamSubscription? _completedSub;
   final List<StreamSubscription> _subs = [];
   Timer? _progressTimer;
@@ -66,9 +65,28 @@ class _PlayerPageState extends State<PlayerPage> {
   /// 换集序号：过期异步结果直接丢弃，防止快速换集时旧解析覆盖新集
   int _openSeq = 0;
 
+  // ==================== 预载下一集 ====================
+  bool _preloadStarted = false;
+  bool _preloadReady = false;
+  String? _preloadedUrl;
+  int _preloadedIndex = -1;
+  DateTime? _preloadFailedAt;
+
+  // ==================== 进度跳回防护 ====================
+  /// 最近稳定播放位置（单调递增），用于检测/恢复“长视频中途跳回开头”
+  Duration _lastStable = Duration.zero;
+
+  /// 最近一次由我们发起的 seek 时间（其后的回跳是正常行为）
+  DateTime? _seekIssuedAt;
+  bool _recoveryVerifying = false;
+
+  /// 退后台前是否在播放（回前台自动续播用）
+  bool _wasPlaying = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _player = Player();
     _controller = VideoController(_player);
@@ -76,8 +94,30 @@ class _PlayerPageState extends State<PlayerPage> {
     _speed = context.read<SettingsProvider>().defaultSpeed;
 
     _bindStreams();
-    _mpvTweaks = _applyMpvTweaks();
     _openEpisode(widget.initialEpisode, resumeSaved: true);
+  }
+
+  // ==================== 生命周期（退后台 / 回前台） ====================
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (!mounted) return;
+    if (state == AppLifecycleState.paused) {
+      _wasPlaying = _playing;
+      debugPrint(
+          '[EP] lifecycle paused pos=${_fmt(_position)} playing=$_playing');
+    } else if (state == AppLifecycleState.resumed) {
+      debugPrint('[EP] lifecycle resumed err=${_error.isNotEmpty} '
+          'pos=${_fmt(_position)} loading=$_loading');
+      if (_error.isNotEmpty && !_loading) {
+        // 后台期间播放失败：回前台自动重试，并从当前（或最近）位置续播
+        debugPrint('[EP] resume: auto-retry from ${_fmt(_position)}');
+        _openEpisode(_episode, resumeSaved: true, resumeAt: _position);
+      } else if (_wasPlaying && !_playing && !_loading) {
+        _player.play();
+      }
+    }
   }
 
   void _bindStreams() {
@@ -89,10 +129,11 @@ class _PlayerPageState extends State<PlayerPage> {
           .listen((v) => mountedSafe(() => setState(() => _duration = v))))
       ..add(_player.stream.error.listen((e) {
         if (e.isNotEmpty && mounted && !_loading) {
+          debugPrint('[EP] player error: $e');
           mountedSafe(() => setState(() => _error = '播放出错：$e'));
         }
       }));
-    // 播放完毕自动跳转下一集
+    // 播放完毕自动跳转下一集（换集瞬间的过期 completed 由 _loading/_endHandled 拦截）
     _completedSub = _player.stream.completed.listen((completed) {
       if (!completed || !mounted) return;
       _onEpisodeEnd();
@@ -103,13 +144,24 @@ class _PlayerPageState extends State<PlayerPage> {
     if (mounted) fn();
   }
 
+  /// 诊断节流：位置日志最多每 3 秒一条（排查"进度卡死"类问题）
+  int _lastPosLogSec = -99;
+
   void _onPosition(Duration v) {
     final prev = _position;
+    if ((v.inSeconds - _lastPosLogSec).abs() >= 3) {
+      _lastPosLogSec = v.inSeconds;
+      debugPrint(
+          '[POS] ${_fmt(v)}/${_fmt(_duration)} loading=$_loading playing=$_playing');
+    }
     mountedSafe(() => setState(() => _position = v));
     if (v + const Duration(seconds: 1) < prev) {
       // 拖回进度重看：解除片尾防重入，允许再次自动下一集
       _endHandled = false;
     }
+    if (v > _lastStable) _lastStable = v;
+    _recoverJumpBack(prev, v);
+    _maybePreloadNext(v);
     _maybeFinish(v);
   }
 
@@ -121,11 +173,162 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  /// mpv 音频调优（针对第三方线路 m3u8：缓冲换顿/破音/倍速变调）。
+  /// 长视频中途“莫名跳回开头”防护：
+  /// 服务器断流重连/mpv 重载时位置可能被重置到 0 或大幅后退，
+  /// 若非用户主动拖动（[_seekIssuedAt] 窗口内），自动 seek 回最近稳定位置。
+  void _recoverJumpBack(Duration prev, Duration v) {
+    if (_loading || _dragValue != null || _endHandled) return;
+    final sinceSeek = _seekIssuedAt == null
+        ? const Duration(days: 1)
+        : DateTime.now().difference(_seekIssuedAt!);
+    if (sinceSeek < const Duration(seconds: 6)) return;
+    if (_duration < const Duration(seconds: 60)) return;
+
+    final bigBack = prev - v > const Duration(seconds: 30);
+    final restartToZero =
+        v < const Duration(seconds: 5) && prev > const Duration(seconds: 60);
+    if (!bigBack && !restartToZero) return;
+    if (_lastStable <= v + const Duration(seconds: 10)) return;
+
+    final target = _lastStable;
+    debugPrint('[POS] 异常跳回 ${_fmt(v)}（上一帧 ${_fmt(prev)}）'
+        ' → 恢复到 ${_fmt(target)}');
+    _seekIssuedAt = DateTime.now();
+    _player.seek(target).then((_) {
+      debugPrint('[POS] 恢复 seek 完成 -> ${_fmt(target)}');
+      _verifyJumpRecovery(target);
+    }).catchError((Object e) {
+      debugPrint('[POS] 恢复 seek 失败: $e');
+    });
+  }
+
+  /// 恢复 seek 后校验：断流重载可能在恢复后再次把位置砸回 0
+  /// （且落在 seek 宽限窗内不触发新一轮检测），故每 3s 检查一次漂移，
+  /// 偏离 >15s 则再恢复，最多 3 轮。用户拖动或换集即中止。
+  Future<void> _verifyJumpRecovery(Duration target) async {
+    if (_recoveryVerifying) return;
+    _recoveryVerifying = true;
+    try {
+      for (var i = 0; i < 3; i++) {
+        await Future<void>.delayed(const Duration(seconds: 3));
+        if (!mounted || _loading || _endHandled || _dragValue != null) return;
+        final p = _player.state.position;
+        if ((p - target).abs() <= const Duration(seconds: 15)) return;
+        debugPrint('[POS] 恢复未保持 ${_fmt(p)}，再恢复 -> ${_fmt(target)}');
+        _seekIssuedAt = DateTime.now();
+        try {
+          await _player.seek(target);
+        } catch (_) {
+          return;
+        }
+      }
+    } finally {
+      _recoveryVerifying = false;
+    }
+  }
+
+  // ==================== 预载下一集 ====================
+
+  /// 距结尾达到预载提前量时，提前解析下一集直链（结果进线路会话缓存，
+  /// 本集播完后换集只需 open，无需再等解析）
+  void _maybePreloadNext(Duration v) {
+    if (!mounted || _loading || _duration <= Duration.zero) return;
+    final settings = context.read<SettingsProvider>();
+    if (!settings.preloadNext) return;
+    if (_preloadReady) return;
+    if (_preloadStarted) return; // 已在解析中
+    final failedAt = _preloadFailedAt;
+    if (failedAt != null &&
+        DateTime.now().difference(failedAt) < const Duration(seconds: 5)) {
+      return; // 失败后 5 秒冷却，避免每帧重试
+    }
+    _preloadFailedAt = null;
+    final next = _nextPlayable;
+    if (next == null) return;
+    final remain = _duration - v;
+    if (remain > Duration(seconds: settings.preloadLeadSec) ||
+        remain <= Duration.zero) {
+      return;
+    }
+    _preloadStarted = true;
+    _preloadFailedAt = null;
+    final seq = _openSeq;
+    debugPrint('[PRE] 预载第${next.index}集（剩 ${remain.inSeconds}s）');
+    _preload(next, seq);
+  }
+
+  Future<void> _preload(Episode next, int seq) async {
+    try {
+      final url = await ApiService.fetchPlayUrl(
+        seriesId: widget.drama.bookId,
+        vid: next.itemId,
+        title: widget.drama.title,
+        episodeIndex: next.index,
+      );
+      if (!mounted || seq != _openSeq) return;
+      setState(() {
+        _preloadedUrl = url;
+        _preloadedIndex = next.index;
+        _preloadReady = true;
+      });
+      debugPrint('[PRE] 预载完成 #${next.index}');
+    } catch (e) {
+      debugPrint('[PRE] 预载失败 #${next.index}: $e');
+      if (!mounted || seq != _openSeq) return;
+      _preloadStarted = false;
+      _preloadFailedAt = DateTime.now();
+    }
+  }
+
+  /// 右上角提示：“即将播放下一集 · 倒计时”
+  Widget _buildPreloadHint() {
+    if (_loading || _error.isNotEmpty || !_preloadStarted) {
+      return const SizedBox.shrink();
+    }
+    if (_duration <= Duration.zero) return const SizedBox.shrink();
+    final lead = context.read<SettingsProvider>().preloadLeadSec;
+    final remain = _duration - _position;
+    if (remain > Duration(seconds: lead) || remain <= Duration.zero) {
+      return const SizedBox.shrink();
+    }
+    final next = _nextPlayable;
+    if (next == null) return const SizedBox.shrink();
+    final label = _preloadReady
+        ? '即将播放第${next.index}集 · ${remain.inSeconds}s'
+        : '正在预载第${next.index}集…';
+    return Positioned(
+      top: MediaQuery.paddingOf(context).top + 54,
+      right: 12,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.skip_next_rounded,
+                  color: Colors.white70, size: 14),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: const TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// mpv 音频/缓冲调优（针对第三方线路 m3u8：缓冲换顿/破音/倍速变调）。
   /// 属性不存在或不允许运行时修改时静默忽略，不影响播放。
   Future<void> _applyMpvTweaks() async {
     final p = _player.platform;
     if (p is! NativePlayer) return;
+    final bufferSecs = context.read<SettingsProvider>().bufferSecs;
     Future<void> set(String key, String value) async {
       try {
         await p.setProperty(key, value);
@@ -135,17 +338,33 @@ class _PlayerPageState extends State<PlayerPage> {
     }
 
     await set('audio-buffer', '500'); // 加大音频输出缓冲，减少换气/破音
-    await set('cache-secs', '20'); // 网络流读取余量，减少断流卡顿
+    await set('cache-secs', '$bufferSecs'); // 网络流读取余量（设置页可调档位）
     await set('audio-pitch-correction', 'yes'); // 倍速时保持音高
     await set('volume-max', '100'); // 禁止超过 100% 增益导致破音
   }
 
   // ==================== 换集 / 播放源 ====================
 
-  Future<void> _openEpisode(Episode episode, {bool resumeSaved = false}) async {
+  Future<void> _openEpisode(
+    Episode episode, {
+    bool resumeSaved = false,
+    String? presetUrl,
+    Duration? resumeAt,
+  }) async {
     if (!mounted) return;
+    debugPrint('[EP] open #${episode.index} resume=$resumeSaved'
+        '${presetUrl != null ? ' preset=1' : ''}'
+        '${resumeAt != null ? ' at=${_fmt(resumeAt)}' : ''}');
     final seq = ++_openSeq;
     _endHandled = false;
+    // 预载/进度防护状态属于上一集，换集即重置
+    _preloadStarted = false;
+    _preloadReady = false;
+    _preloadedUrl = null;
+    _preloadedIndex = -1;
+    _preloadFailedAt = null;
+    _lastStable = Duration.zero;
+    _seekIssuedAt = null;
     setState(() {
       _episode = episode;
       _loading = true;
@@ -167,37 +386,102 @@ class _PlayerPageState extends State<PlayerPage> {
     if (!mounted || seq != _openSeq) return;
     _startProgressSaving();
     try {
-      // 1) 获取播放直链：前 3 集官方直链，其余由内置线路按测速竞速解析
-      final playUrl = await ApiService.fetchPlayUrl(
-        seriesId: widget.drama.bookId,
-        vid: episode.itemId,
-        title: widget.drama.title,
-        episodeIndex: episode.index,
-      );
+      // 1) 获取播放直链：预载命中直接用，否则走官方直链/线路竞速
+      final String playUrl;
+      if (presetUrl != null) {
+        debugPrint('[EP] #${episode.index} 使用预载直链（跳过解析）');
+        playUrl = presetUrl;
+      } else {
+        playUrl = await ApiService.fetchPlayUrl(
+          seriesId: widget.drama.bookId,
+          vid: episode.itemId,
+          title: widget.drama.title,
+          episodeIndex: episode.index,
+        );
+      }
       if (!mounted || seq != _openSeq) return;
-      await _mpvTweaks;
+      await _applyMpvTweaks();
       if (!mounted || seq != _openSeq) return;
       await _player.open(Media(playUrl));
       if (!mounted || seq != _openSeq) return;
       await _player.setRate(_speed);
       if (!mounted || seq != _openSeq) return;
-      // 2) 进度记忆：自动恢复上次观看位置
-      if (resumeSaved) {
-        final savedMs =
+      // 2) 进度记忆：resumeAt（当前内存进度，重试/换线用）优先，
+      //    其次历史保存位置（历史进入/后台恢复用）
+      var targetMs = 0;
+      if (resumeAt != null && resumeAt > Duration.zero) {
+        targetMs = resumeAt.inMilliseconds;
+      } else if (resumeSaved) {
+        targetMs =
             HistoryService.progressOf(widget.drama.bookId, episode.itemId);
-        if (savedMs > 0) {
-          await _player.seek(Duration(milliseconds: savedMs));
-        }
+      }
+      if (targetMs > 0) {
+        await _seekWhenReady(targetMs, seq);
         if (!mounted || seq != _openSeq) return;
       }
       setState(() => _loading = false);
+      debugPrint('[EP] opened #${episode.index} ready');
       _scheduleHideControls();
     } catch (e) {
       if (!mounted || seq != _openSeq) return;
+      debugPrint('[EP] open failed #${episode.index}: $e');
       setState(() {
         _loading = false;
         _error = PlayLineResolver.lastError ?? '播放源获取失败，请稍后重试';
       });
+    }
+  }
+
+  /// 等新文件可 seek（时长已知）后再 seek，避免打开瞬间 seek 被 mpv 丢弃
+  /// 导致“重试/历史进入从头开始播”
+  Future<void> _seekWhenReady(int ms, int seq) async {
+    final target = Duration(milliseconds: ms);
+    try {
+      // 慢网络下打开媒体可达 10s+，等待时长事件的预算放宽到 20s
+      final d = await _player.stream.duration
+          .firstWhere((v) => v > Duration.zero)
+          .timeout(const Duration(seconds: 20));
+      if (!mounted || seq != _openSeq) return;
+      if (target >= d - const Duration(seconds: 1)) {
+        debugPrint('[EP] seek 跳过：目标 ${_fmt(target)} >= 时长 ${_fmt(d)}');
+        return;
+      }
+      debugPrint('[EP] seek -> ${_fmt(target)}（时长 ${_fmt(d)}）');
+      await _seekWithVerify(target, seq);
+    } on TimeoutException {
+      // 超时兜底：状态里已有时长时仍尝试 seek
+      final d = _player.state.duration;
+      if (!mounted || seq != _openSeq || d <= Duration.zero) {
+        debugPrint('[EP] seek 放弃：20 秒内时长未知');
+        return;
+      }
+      if (target >= d - const Duration(seconds: 1)) return;
+      debugPrint('[EP] seek 兜底 -> ${_fmt(target)}（时长 ${_fmt(d)}）');
+      await _seekWithVerify(target, seq);
+    } catch (e) {
+      debugPrint('[EP] seek 失败: $e');
+    }
+  }
+
+  /// seek 后校验：每 4s 检查一次位置与目标的漂移，若 >15s（加载完成后
+  /// mpv 可能把 playhead 重锚到 0，丢掉加载期发出的 seek）则重试，
+  /// 最多 3 轮，命中即停。随 _seekWhenReady await 执行。
+  Future<void> _seekWithVerify(Duration target, int seq) async {
+    if (target <= const Duration(seconds: 10)) {
+      _seekIssuedAt = DateTime.now();
+      await _player.seek(target);
+      return;
+    }
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) _seekIssuedAt = DateTime.now();
+      await _player.seek(target);
+      await Future<void>.delayed(const Duration(seconds: 4));
+      if (!mounted || seq != _openSeq) return;
+      final p = _player.state.position;
+      final drift = (p - target).abs();
+      if (drift <= const Duration(seconds: 15)) return;
+      debugPrint('[EP] seek 未生效(第${attempt + 1}次)，重试 -> '
+          '${_fmt(target)}（当前 ${_fmt(p)}）');
     }
   }
 
@@ -224,6 +508,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _onEpisodeEnd() async {
+    debugPrint('[EP] end-of-episode #${_episode.index} handled=$_endHandled');
     if (_endHandled || _loading || !mounted) return;
     _endHandled = true;
     final seq = _openSeq;
@@ -235,7 +520,10 @@ class _PlayerPageState extends State<PlayerPage> {
     if (!mounted || seq != _openSeq) return;
     final next = _nextPlayable;
     if (next != null) {
-      _openEpisode(next);
+      final preset =
+          _preloadReady && _preloadedIndex == next.index ? _preloadedUrl : null;
+      if (preset != null) debugPrint('[PRE] 结尾用预载直链开 #${next.index}');
+      _openEpisode(next, presetUrl: preset);
       return;
     }
     setState(() => _playing = false);
@@ -273,6 +561,7 @@ class _PlayerPageState extends State<PlayerPage> {
   // ==================== 控制条 ====================
 
   void _toggleControls() {
+    debugPrint('[UI] toggleControls -> ${_controlsVisible ? 'hide' : 'show'}');
     if (_controlsVisible) {
       setState(() => _controlsVisible = false);
     } else {
@@ -293,6 +582,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   void _togglePlay() {
+    debugPrint('[UI] togglePlay from playing=$_playing');
     if (_playing) {
       _player.pause();
       _showControls();
@@ -464,6 +754,7 @@ class _PlayerPageState extends State<PlayerPage> {
   // ==================== 分集列表 ====================
 
   void _showEpisodeSheet() {
+    debugPrint('[UI] episodeSheet.show');
     _showControls();
     final seed = Theme.of(context).colorScheme.primary;
     showModalBottomSheet<void>(
@@ -548,6 +839,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
   /// 线路选择：首项为“自动（最快）”，其余为内置 20 条线路，可手动锁定
   Future<void> _showLineSheet() async {
+    debugPrint('[UI] lineSheet.show');
     _showControls();
     final seed = Theme.of(context).colorScheme.primary;
     await showModalBottomSheet<void>(
@@ -578,7 +870,7 @@ class _PlayerPageState extends State<PlayerPage> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                                '共${kPlayLines.length}条 · 默认最快 · 已按测速排序',
+                                '共${PlayLineResolver.allLines.length}条 · 默认最快 · 已按测速排序',
                                 style: TextStyle(
                                     fontSize: 12,
                                     color: Theme.of(sheetContext)
@@ -679,6 +971,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
   /// 锁定/取消锁定线路：与当前选择不同才重载本集
   void _selectLine(BuildContext sheetContext, PlayLine? line) {
+    debugPrint('[LINE] select ${line?.id ?? 'auto'}');
     final settings = context.read<SettingsProvider>();
     final next = line?.id ?? '';
     final prev = settings.pinnedLineId;
@@ -686,7 +979,8 @@ class _PlayerPageState extends State<PlayerPage> {
     if (next == prev) return;
     settings.setPinnedLine(next).then((_) {
       if (!mounted) return;
-      _openEpisode(_episode);
+      // 换线重载：从当前播放位置续播，避免从头开始
+      _openEpisode(_episode, resumeSaved: true, resumeAt: _position);
     });
   }
 
@@ -709,7 +1003,45 @@ class _PlayerPageState extends State<PlayerPage> {
             if (_loading) _buildLoading(),
             if (_error.isNotEmpty) _buildError(),
             _buildControls(context),
+            _buildPreloadHint(),
+            if (!_loading && _error.isEmpty) _buildSlimProgress(context),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 底部细进度条（设置页可开关）：控件隐藏时也能一眼看到播放进度
+  Widget _buildSlimProgress(BuildContext context) {
+    if (!context.watch<SettingsProvider>().slimProgress) {
+      return const SizedBox.shrink();
+    }
+    if (_duration <= Duration.zero) return const SizedBox.shrink();
+    final p = (_position.inMilliseconds / _duration.inMilliseconds)
+        .clamp(0.0, 1.0);
+    final seed = Theme.of(context).colorScheme.primary;
+    final bottomPad =
+        _fullscreen ? MediaQuery.paddingOf(context).bottom : 0.0;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: bottomPad,
+      child: IgnorePointer(
+        child: SizedBox(
+          height: 2,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Container(color: Colors.white12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: p,
+                  child: Container(color: seed),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -733,11 +1065,22 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Widget _buildLoading() {
-    return const Center(
-      child: SizedBox(
-        width: 36,
-        height: 36,
-        child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white70),
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 36,
+            height: 36,
+            child: CircularProgressIndicator(
+                strokeWidth: 2.5, color: Colors.white70),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '正在解析最佳线路…',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ],
       ),
     );
   }
@@ -749,12 +1092,27 @@ class _PlayerPageState extends State<PlayerPage> {
         children: [
           const Icon(Icons.error_outline_rounded, color: Colors.white54, size: 40),
           const SizedBox(height: 10),
-          Text(_error, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          Text(_error,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 13)),
           const SizedBox(height: 14),
-          OutlinedButton(
-            style: OutlinedButton.styleFrom(foregroundColor: Colors.white70),
-            onPressed: () => _openEpisode(_episode, resumeSaved: true),
-            child: const Text('重试'),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              OutlinedButton(
+                style:
+                    OutlinedButton.styleFrom(foregroundColor: Colors.white70),
+                onPressed: () =>
+                    _openEpisode(_episode, resumeSaved: true, resumeAt: _position),
+                child: const Text('重试'),
+              ),
+              const SizedBox(width: 10),
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.white54),
+                onPressed: _showLineSheet,
+                child: const Text('换个线路'),
+              ),
+            ],
           ),
         ],
       ),
@@ -894,6 +1252,7 @@ class _PlayerPageState extends State<PlayerPage> {
                       onChangeEnd: (v) {
                         final target = Duration(
                             milliseconds: (v * _duration.inMilliseconds).round());
+                        _seekIssuedAt = DateTime.now();
                         _player.seek(target);
                         setState(() => _dragValue = null);
                       },
@@ -989,6 +1348,7 @@ class _PlayerPageState extends State<PlayerPage> {
     for (final s in _subs) {
       s.cancel();
     }
+    WidgetsBinding.instance.removeObserver(this);
     _player.dispose();
     _exitFullscreenIfAny();
     super.dispose();

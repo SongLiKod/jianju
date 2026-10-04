@@ -17,12 +17,18 @@ class AppConstants {
   static const String keyPrimaryColor = 'settings.primary_color'; // 色板索引
   // 播放
   static const String keyDefaultSpeed = 'settings.default_speed';
+  // 播放体验（预载/缓冲/进度条）
+  static const String keyPreloadNext = 'settings.preload_next';
+  static const String keyPreloadLead = 'settings.preload_lead_sec';
+  static const String keyBufferSecs = 'settings.buffer_secs';
+  static const String keySlimProgress = 'settings.slim_progress';
   // 数据源
   static const String keyDataSource = 'settings.data_source'; // web/api52/line:<id>
   static const String keyApi52Key = 'settings.api52_key';
   // 播放线路
   static const String keyPinnedLine = 'settings.pinned_line'; // ''=自动（最快）
   static const String keyPlayLineStats = 'local.play_line_stats'; // 线路测速统计 JSON
+  static const String keyCustomLines = 'local.custom_lines'; // 自定义站点 JSON
 
   // ==================== 数据源 ====================
   /// 数据源：官方网页源（默认，前 3 集可播）
@@ -54,6 +60,7 @@ class AppConstants {
   // 本地数据
   static const String keyFavorites = 'local.favorites';
   static const String keyHistory = 'local.history';
+  static const String keySearchHistory = 'local.search_history';
 
   // ==================== 本地数据限制 ====================
   /// 历史/收藏最多保留条数（防本地数据无限膨胀）
@@ -66,4 +73,22 @@ class AppConstants {
   static const Duration progressMinKeep = Duration(seconds: 3);
   /// 结尾剩余小于该值视为看完，清除记忆
   static const Duration progressEndTrim = Duration(seconds: 10);
+
+  // ==================== 播放体验（预载 / 缓冲 / 进度条） ====================
+  /// 预载下一集默认开关
+  static const bool defaultPreloadNext = true;
+  /// 距结尾多少秒开始预载下一集（默认 10 秒）
+  static const int defaultPreloadLeadSec = 10;
+  /// 预载提前量候选项（秒）
+  static const List<int> preloadLeadOptions = [5, 10, 15, 30, 60];
+  /// 网络缓冲默认秒数（mpv cache-secs）
+  static const int defaultBufferSecs = 20;
+  /// 缓冲档位候选项（秒）：小 / 标准 / 大 / 超大
+  static const List<int> bufferOptions = [10, 20, 60, 180];
+  /// 底部细进度条默认开启
+  static const bool defaultSlimProgress = true;
+
+  // ==================== 搜索历史 ====================
+  /// 搜索历史最多保留条数
+  static const int maxSearchHistory = 20;
 }

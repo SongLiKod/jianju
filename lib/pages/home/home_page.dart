@@ -165,7 +165,7 @@ class _HomePageState extends State<HomePage>
                   child: const Text('52api 红果源'),
                 ),
                 const PopupMenuDivider(),
-                for (final line in kPlayLines)
+                for (final line in PlayLineResolver.allLines)
                   if (line.mode == PlayLineMode.api)
                     CheckedPopupMenuItem<String>(
                       value:

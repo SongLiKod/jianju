@@ -77,9 +77,12 @@ class MinePage extends StatelessWidget {
             icon: Icons.settings_outlined,
             title: '设置',
             subtitle: '主题、播放与数据清理',
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SettingsPage()),
-            ),
+            onTap: () {
+              debugPrint('[NAV] mine: settings');
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsPage()),
+              );
+            },
           ),
         ],
       ),

@@ -10,6 +10,7 @@ import 'app.dart';
 import 'core/services/device_service.dart';
 import 'core/services/favorite_service.dart';
 import 'core/services/history_service.dart';
+import 'core/services/search_history_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/state/settings_provider.dart';
 import 'core/state/theme_provider.dart';
@@ -34,6 +35,7 @@ Future<void> main() async {
   await DeviceService.init();
   FavoriteService.init();
   HistoryService.init();
+  SearchHistoryService.init();
 
   final themeProvider = ThemeProvider()..load();
   final settingsProvider = SettingsProvider()..load();

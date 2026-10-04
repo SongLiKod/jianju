@@ -145,8 +145,9 @@ class ApiService {
     if (site == null) return ApiConstants.rankLabels;
     final tabs = await site.categoryTabs();
     final out = <String, String>{};
+    // 榜单条为横向滚动，最多放 8 个（与分类 tab 上限一致）
     for (final e in tabs.entries) {
-      if (out.length >= 4) break;
+      if (out.length >= 8) break;
       out['hot:${e.key}'] = '${e.value}榜';
     }
     if (out.isEmpty) out['hot:5'] = '短剧榜';

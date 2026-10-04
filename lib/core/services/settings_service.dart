@@ -34,6 +34,49 @@ class SettingsService {
   static Future<void> setDefaultSpeed(double speed) =>
       StorageService.setString(AppConstants.keyDefaultSpeed, '$speed');
 
+  // ==================== 播放体验（预载 / 缓冲 / 进度条） ====================
+  static bool _boolOf(String key, bool fallback) {
+    final raw = StorageService.getString(key);
+    if (raw.isEmpty) return fallback;
+    return raw == '1';
+  }
+
+  static Future<void> _setBool(String key, bool v) =>
+      StorageService.setString(key, v ? '1' : '0');
+
+  static int _intOf(String key, List<int> options, int fallback) {
+    final v = int.tryParse(StorageService.getString(key));
+    return v != null && options.contains(v) ? v : fallback;
+  }
+
+  /// 预载下一集（本集结尾前提前解析下一集直链，换集秒开）
+  static bool get preloadNext =>
+      _boolOf(AppConstants.keyPreloadNext, AppConstants.defaultPreloadNext);
+
+  static Future<void> setPreloadNext(bool v) =>
+      _setBool(AppConstants.keyPreloadNext, v);
+
+  /// 预载提前量（距结尾的秒数）
+  static int get preloadLeadSec => _intOf(AppConstants.keyPreloadLead,
+      AppConstants.preloadLeadOptions, AppConstants.defaultPreloadLeadSec);
+
+  static Future<void> setPreloadLeadSec(int v) =>
+      StorageService.setString(AppConstants.keyPreloadLead, '$v');
+
+  /// 网络缓冲秒数（mpv cache-secs，越大越不容易卡顿）
+  static int get bufferSecs => _intOf(AppConstants.keyBufferSecs,
+      AppConstants.bufferOptions, AppConstants.defaultBufferSecs);
+
+  static Future<void> setBufferSecs(int v) =>
+      StorageService.setString(AppConstants.keyBufferSecs, '$v');
+
+  /// 底部细进度条常显开关
+  static bool get slimProgress =>
+      _boolOf(AppConstants.keySlimProgress, AppConstants.defaultSlimProgress);
+
+  static Future<void> setSlimProgress(bool v) =>
+      _setBool(AppConstants.keySlimProgress, v);
+
   // ==================== 数据源 ====================
   /// 数据源：`web` 官方网页源 / `api52` 第三方红果聚合源 /
   /// `line:<线路id>` 整站数据源（该站的首页/分类/搜索/详情/播放全部数据）
@@ -66,4 +109,11 @@ class SettingsService {
 
   static Future<void> setPinnedLine(String lineId) =>
       StorageService.setString(AppConstants.keyPinnedLine, lineId.trim());
+
+  // ==================== 自定义站点（JSON 数组原始串） ====================
+  static String get customLinesRaw =>
+      StorageService.getString(AppConstants.keyCustomLines);
+
+  static Future<void> setCustomLinesRaw(String raw) =>
+      StorageService.setString(AppConstants.keyCustomLines, raw);
 }

@@ -31,6 +31,9 @@ class PlayLine {
     required this.base,
     required this.mode,
   });
+
+  /// 是否用户自定义添加的站点（id 形如 `custom-<host>`）
+  bool get isCustom => id.startsWith('custom-');
 }
 
 /// 内置线路注册表（20 条，均以《宴律》第 40 集端到端验证可解析 m3u8）
@@ -88,7 +91,11 @@ class PlayLineResolver {
   PlayLineResolver._();
 
   /// 单条线路解析总超时
-  static const Duration _lineTimeout = Duration(seconds: 30);
+  static const Duration _lineTimeout = Duration(seconds: 15);
+
+  /// 整次解析总预算：超时即报“解析超时”；未完成的尝试在后台继续，
+  /// 成功后写入缓存，下次同集秒开
+  static const Duration _totalBudget = Duration(seconds: 15);
 
   /// 竞速并发批量
   static const int _batchSize = 5;
@@ -97,7 +104,7 @@ class PlayLineResolver {
   static const int _maxCandidates = 3;
 
   /// 单次解析最多尝试的搜索关键词数
-  static const int _maxKeywords = 4;
+  static const int _maxKeywords = 3;
 
   /// 缓存上限（超出后整体清空，避免无界增长）
   static const int _maxCache = 200;
@@ -125,10 +132,151 @@ class PlayLineResolver {
     lastError = null;
   }
 
+  /// 测试辅助：复位自定义站点（下次访问重新从存储加载）
+  @visibleForTesting
+  static void resetCustomLinesForTest() {
+    _custom.clear();
+    _customLoaded = false;
+  }
+
+  // ==================== 自定义站点（用户添加） ====================
+
+  static final List<PlayLine> _custom = [];
+  static bool _customLoaded = false;
+
+  /// 全部线路：内置 20 条 + 用户自定义站点
+  static List<PlayLine> get allLines {
+    _ensureCustomLoaded();
+    return [...kPlayLines, ..._custom];
+  }
+
+  /// 用户自定义站点列表
+  static List<PlayLine> get customLines {
+    _ensureCustomLoaded();
+    return List.unmodifiable(_custom);
+  }
+
+  static void _ensureCustomLoaded() {
+    if (_customLoaded) return;
+    _customLoaded = true;
+    try {
+      final raw = SettingsService.customLinesRaw;
+      if (raw.isEmpty) return;
+      final list = jsonDecode(raw);
+      if (list is! List) return;
+      for (final e in list) {
+        if (e is! Map) continue;
+        final id = e['id']?.toString() ?? '';
+        final base = e['base']?.toString() ?? '';
+        final name = e['name']?.toString() ?? '';
+        if (id.isEmpty || base.isEmpty) continue;
+        final mode =
+            e['mode']?.toString() == 'html' ? PlayLineMode.html : PlayLineMode.api;
+        _custom.add(PlayLine(
+          id: id,
+          name: name.isEmpty ? base : name,
+          base: base,
+          mode: mode,
+        ));
+      }
+    } catch (_) {
+      // 数据损坏：忽略自定义站点
+    }
+  }
+
+  /// 自定义站点唯一 id（不含冒号：整站源 ID 以冒号分段，含冒号会破坏分派）
+  static String customIdFor(String base) {
+    final host = (Uri.tryParse(base)?.host ?? base).toLowerCase();
+    final safe = host.replaceAll(RegExp(r'[^0-9a-z.\-]'), '');
+    return 'custom-$safe';
+  }
+
+  /// 归一化站点地址：补协议、去尾部斜杠
+  static String normalizeBase(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return s;
+    if (!s.startsWith('http://') && !s.startsWith('https://')) {
+      s = 'https://$s';
+    }
+    while (s.endsWith('/')) {
+      s = s.substring(0, s.length - 1);
+    }
+    return s;
+  }
+
+  /// 添加/覆盖自定义站点（同主机覆盖）
+  static Future<void> addCustom({
+    required String name,
+    required String base,
+    required PlayLineMode mode,
+  }) async {
+    _ensureCustomLoaded();
+    final normalized = normalizeBase(base);
+    final id = customIdFor(normalized);
+    _custom.removeWhere((l) => l.id == id);
+    _custom.add(PlayLine(id: id, name: name, base: normalized, mode: mode));
+    await _persistCustom();
+  }
+
+  /// 删除自定义站点（当前数据源/锁定线路指向它时同步清掉）
+  static Future<void> removeCustom(String id) async {
+    _ensureCustomLoaded();
+    _custom.removeWhere((l) => l.id == id);
+    await _persistCustom();
+    try {
+      if (SettingsService.dataSource == AppConstants.dataSourceOfLine(id)) {
+        await SettingsService.setDataSource(AppConstants.dataSourceWeb);
+      }
+      if (SettingsService.pinnedLineId == id) {
+        await SettingsService.setPinnedLine('');
+      }
+    } catch (_) {
+      // 存储未初始化时忽略
+    }
+  }
+
+  static Future<void> _persistCustom() async {
+    await SettingsService.setCustomLinesRaw(jsonEncode([
+      for (final l in _custom)
+        {'id': l.id, 'name': l.name, 'base': l.base, 'mode': l.mode.name},
+    ]));
+  }
+
+  /// 站点可用性检测：可用返回 null，否则返回中文失败原因
+  static Future<String?> probeCustom(String base, PlayLineMode mode) async {
+    final line = PlayLine(id: '__probe__', name: 'probe', base: base, mode: mode);
+    final dio = _client(line);
+    try {
+      if (mode == PlayLineMode.api) {
+        final body = await _get(
+            dio, '$base/api.php/provide/vod/?ac=list&pg=1');
+        if (body == null) return '接口无响应（检查地址是否为 maccms 站点根目录）';
+        final v = _tryJson(body);
+        if (v is! Map) return '接口返回的不是 JSON（该站可能不是标准 maccms 接口）';
+        final list = v['list'];
+        final pagecount = int.tryParse(v['pagecount']?.toString() ?? '') ?? 0;
+        if (list is! List || (list.isEmpty && pagecount <= 0)) {
+          return '接口可达但无数据（list 为空）';
+        }
+        return null;
+      }
+      // html 模式：搜索页可达且含详情/播放链接
+      final body = await _get(dio,
+          '$base/vodsearch/-------------.html?wd=${Uri.encodeComponent('测试')}');
+      if (body == null) return '搜索页无响应（检查地址是否为 maccms 站点根目录）';
+      if (!RegExp(r'/(?:voddetail|vodplay)/').hasMatch(body)) {
+        return '页面不含 voddetail/vodplay 链接（该站可能不是 maccms 模板）';
+      }
+      return null;
+    } catch (e) {
+      return '检测失败：${_message(e)}';
+    }
+  }
+
   // ==================== 线路集合与排序 ====================
 
   static PlayLine? byId(String id) {
-    for (final l in kPlayLines) {
+    for (final l in allLines) {
       if (l.id == id) return l;
     }
     return null;
@@ -136,7 +284,7 @@ class PlayLineResolver {
 
   /// 按测速分值升序（分值 = EMA 耗时 + 连续失败惩罚），最快在前
   static List<PlayLine> orderedLines() {
-    final list = [...kPlayLines];
+    final list = allLines;
     list.sort((a, b) => scoreOf(a).compareTo(scoreOf(b)));
     return list;
   }
@@ -187,21 +335,38 @@ class PlayLineResolver {
     }
 
     final lines = orderedLines();
+    try {
+      final win = await _raceBatches(lines, title, episodeIndex)
+          .timeout(_totalBudget);
+      if (win != null) {
+        lastUsedLine = win.line;
+        debugPlayLine('自动选中线路 ${win.line.id} -> ${win.url}');
+        return win.url;
+      }
+    } on TimeoutException {
+      lastError = '解析超时（${_totalBudget.inSeconds} 秒内未成功），请重试或手动选择线路';
+      throw Exception(lastError);
+    }
+
+    lastError = '全部 ${lines.length} 条线路均解析失败（该集可能未被第三方站收录，可稍后重试或手动换线）';
+    throw Exception(lastError);
+  }
+
+  /// 分批并发竞速：批内首个成功即胜出，全败进下一批
+  static Future<_Win?> _raceBatches(
+    List<PlayLine> lines,
+    String title,
+    int episodeIndex,
+  ) async {
     for (var i = 0; i < lines.length; i += _batchSize) {
       final batch = <Future<_Win?>>[];
       for (var j = i; j < lines.length && j < i + _batchSize; j++) {
         batch.add(_tryLine(lines[j], title, episodeIndex));
       }
       final win = await _firstSuccess(batch);
-      if (win != null) {
-        lastUsedLine = win.line;
-        debugPlayLine('自动选中线路 ${win.line.id} -> ${win.url}');
-        return win.url;
-      }
+      if (win != null) return win;
     }
-
-    lastError = '全部 ${lines.length} 条线路均解析失败（未收录或网络异常）';
-    throw Exception(lastError);
+    return null;
   }
 
   /// 线路解析日志（输出到 logcat，便于排查当前用的是哪条线路）
@@ -341,50 +506,58 @@ class PlayLineResolver {
     int episodeIndex,
   ) async {
     final dio = _client(line);
-    String? reason;
+    String? netReason;
+    String? contentReason;
     for (final kw in searchKeywords(title)) {
       final search = await _get(dio,
           '${line.base}/vodsearch/-------------.html?wd=${Uri.encodeComponent(kw)}');
       if (search == null) {
-        reason = '搜索页无响应';
+        netReason = '搜索页无响应（网络异常）';
         continue;
       }
 
       final ids = _candidatesFromSearch(search, title);
       if (ids.isEmpty) {
-        reason = '搜索无结果';
+        contentReason ??= '搜索无结果';
         continue;
       }
 
+      var epMissing = false;
       for (var i = 0; i < ids.length; i++) {
         final id = ids[i];
         final detail = await _get(dio, '${line.base}/voddetail/$id.html');
-        if (detail != null) {
-          final dt = _pageTitle(detail);
-          // 详情页剧名与目标不符：该候选是推荐位/缓存错页，跳过（含直拼兜底）
-          if (dt != null && dt.isNotEmpty && !nameMatches(dt, title)) continue;
-          final path = _epPathFromDetail(detail, id, episodeIndex);
-          if (path != null) {
-            final url = await _m3u8FromPlay(dio, '${line.base}/$path');
-            if (url != null) return url;
-          }
+        if (detail == null) {
+          // 详情页不可用：首个已验名候选直拼播放页（部分站无详情页）
           if (i == 0) {
             final direct = await _m3u8FromPlay(
                 dio, '${line.base}/vodplay/$id-1-$episodeIndex.html');
             if (direct != null) return direct;
+            netReason = '详情页无响应（网络异常）';
           }
           continue;
         }
-        // 详情页不可用：首个已验名候选直拼播放页（部分站无详情页）
+        // 详情页剧名与目标不符：该候选是推荐位/缓存错页，跳过
+        if (!_detailNameMatches(detail, title)) continue;
+        final path = _epPathFromDetail(detail, id, episodeIndex);
+        if (path != null) {
+          final url = await _m3u8FromPlay(dio, '${line.base}/$path');
+          if (url != null) return url;
+        }
         if (i == 0) {
           final direct = await _m3u8FromPlay(
               dio, '${line.base}/vodplay/$id-1-$episodeIndex.html');
           if (direct != null) return direct;
         }
+        epMissing = true;
       }
-      reason = '未收录第$episodeIndex集';
+      if (epMissing) {
+        contentReason = '未收录第$episodeIndex集';
+      } else {
+        contentReason ??= '搜索无结果';
+      }
     }
-    throw Exception(reason ?? '搜索无结果');
+    // 内容类失败（站可达但没这集）比网络类更可信，优先后者呈现
+    throw Exception(contentReason ?? netReason ?? '搜索无结果');
   }
 
   /// 生成搜索关键词（maccms `wd` 是裸 LIKE：站名含空格/标点时整串标题必失败，
@@ -487,6 +660,27 @@ class PlayLineResolver {
         .replaceAll('&amp;', '&')
         .replaceAll('&quot;', '"')
         .trim();
+  }
+
+  /// 详情页剧名是否匹配目标。
+  ///
+  /// 站点改版后页签常带装饰（`剧名-已完结2026AI漫剧高清全集在线观看-站名`），
+  /// 整串比对永不匹配会把正确详情页全部跳过；这里依次用
+  /// `<h1>`、页签首段（分隔符前的纯剧名）、完整页签比对，任一确认即通过。
+  static bool _detailNameMatches(String html, String title) {
+    final cands = <String>[];
+    final h1 = RegExp(r'<h1[^>]*>(.*?)</h1>', caseSensitive: false, dotAll: true)
+        .firstMatch(html)
+        ?.group(1)
+        ?.replaceAll(RegExp(r'<[^>]+>'), '')
+        .trim();
+    if (h1 != null && h1.isNotEmpty) cands.add(h1);
+    final page = _pageTitle(html);
+    if (page != null && page.isNotEmpty) {
+      cands.add(page.split(RegExp(r'\s*[-–—|｜]\s*')).first);
+      cands.add(page);
+    }
+    return cands.any((c) => nameMatches(c, title));
   }
 
   /// 详情页 → 目标集的播放页相对路径（同集多线路取线路号最小者）
@@ -636,14 +830,19 @@ class PlayLineResolver {
       ));
 
   static Future<String?> _get(Dio dio, String url) async {
-    try {
-      final resp = await dio.get<dynamic>(url);
-      final body = resp.data?.toString() ?? '';
-      if (body.isEmpty) return null;
-      return body;
-    } catch (_) {
-      return null;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final resp = await dio.get<dynamic>(url);
+        final body = resp.data?.toString() ?? '';
+        if (body.isNotEmpty) return body;
+      } catch (_) {
+        // 瞬时网络抖动：重试一次
+      }
+      if (attempt == 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
     }
+    return null;
   }
 
   static dynamic _tryJson(String body) {

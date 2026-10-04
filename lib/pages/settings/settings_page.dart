@@ -33,6 +33,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    debugPrint('[NAV] settings.init');
     _loadCacheSize();
     _loadVersion();
   }
@@ -186,37 +187,114 @@ class _SettingsPageState extends State<SettingsPage> {
           _sectionTitle('播放器'),
           _groupContainer(
             isDark,
-            child: ListTile(
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-              leading: Icon(Icons.speed_rounded, color: outline, size: 22),
-              title: const Text('默认播放倍速',
-                  style: TextStyle(fontSize: 15)),
-              subtitle: Text('打开视频自动加载，范围 0.75x ~ 5x',
-                  style: TextStyle(fontSize: 12, color: outline)),
-              trailing: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: seed.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(8),
+            children: [
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.speed_rounded, color: outline, size: 22),
+                title: const Text('默认播放倍速',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('打开视频自动加载，范围 0.75x ~ 5x',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: seed.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _speedText(settings.defaultSpeed),
+                    style: TextStyle(
+                        color: seed,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13),
+                  ),
                 ),
-                child: Text(
-                  _speedText(settings.defaultSpeed),
-                  style: TextStyle(
-                      color: seed,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13),
-                ),
+                onTap: () async {
+                  final provider = context.read<SettingsProvider>();
+                  final picked = await _pickDefaultSpeed(settings.defaultSpeed, seed);
+                  if (picked != null) {
+                    provider.setDefaultSpeed(picked);
+                  }
+                },
               ),
-              onTap: () async {
-                final provider = context.read<SettingsProvider>();
-                final picked = await _pickDefaultSpeed(settings.defaultSpeed, seed);
-                if (picked != null) {
-                  provider.setDefaultSpeed(picked);
-                }
-              },
-            ),
+              const Divider(indent: 16),
+              // 预载下一集：本集结尾前提前解析下一集，换集秒开不黑屏
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary: Icon(Icons.flash_auto_rounded,
+                    color: outline, size: 22),
+                title: const Text('预载下一集',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  '本集结束前 ${settings.preloadLeadSec} 秒提前解析下一集，'
+                  '播完立即接上（右上角有倒计时提示）',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                value: settings.preloadNext,
+                onChanged: (v) => context.read<SettingsProvider>().setPreloadNext(v),
+              ),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.timer_outlined, color: outline, size: 22),
+                title: const Text('提前预载时间',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('距本集结尾还有多久开始预载',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: _chip('${settings.preloadLeadSec} 秒', seed, settings.preloadNext),
+                enabled: settings.preloadNext,
+                onTap: () async {
+                  final provider = context.read<SettingsProvider>();
+                  final v = await _pickInt(
+                    '提前预载时间',
+                    AppConstants.preloadLeadOptions,
+                    settings.preloadLeadSec,
+                    (n) => '$n 秒',
+                    seed,
+                  );
+                  if (v != null) provider.setPreloadLeadSec(v);
+                },
+              ),
+              const Divider(indent: 16),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.network_check_rounded,
+                    color: outline, size: 22),
+                title: const Text('缓冲大小（网络提速）',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('越大越不容易卡顿，弱网建议选大',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: _chip(_bufferText(settings.bufferSecs), seed, true),
+                onTap: () async {
+                  final provider = context.read<SettingsProvider>();
+                  final v = await _pickInt(
+                    '缓冲大小',
+                    AppConstants.bufferOptions,
+                    settings.bufferSecs,
+                    _bufferText,
+                    seed,
+                  );
+                  if (v != null) provider.setBufferSecs(v);
+                },
+              ),
+              const Divider(indent: 16),
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary:
+                    Icon(Icons.timeline_rounded, color: outline, size: 22),
+                title: const Text('底部进度条',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('播放时在底部显示一条细进度线（控件隐藏也可见）',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                value: settings.slimProgress,
+                onChanged: (v) => context.read<SettingsProvider>().setSlimProgress(v),
+              ),
+            ],
           ),
 
           // ==================== 3. 数据源区域 ====================
@@ -275,7 +353,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
 
-          // ==================== 3.5 整站站点（maccms API 站） ====================
+          // ==================== 3.5 整站站点（maccms API 站 + 自定义） ====================
           _sectionTitle('整站站点'),
           _groupContainer(
             isDark,
@@ -284,12 +362,27 @@ class _SettingsPageState extends State<SettingsPage> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
                 child: Text(
                   '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站点'
-                  '（仅列出提供标准接口的站点）',
+                  '（标准 maccms 接口站可自定义添加）',
                   style: TextStyle(fontSize: 12, color: outline, height: 1.4),
                 ),
               ),
-              for (final line in kPlayLines)
-                if (line.mode == PlayLineMode.api) ...[
+              const Divider(indent: 16),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading:
+                    Icon(Icons.add_circle_outline_rounded, color: seed, size: 22),
+                title: Text('添加自定义站点',
+                    style: TextStyle(
+                        fontSize: 15,
+                        color: seed,
+                        fontWeight: FontWeight.w600)),
+                subtitle: Text('标准 maccms 接口站 / 网页解析站，自动检测可用性',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                onTap: _addCustomSite,
+              ),
+              for (final line in PlayLineResolver.allLines)
+                if (!line.isCustom && line.mode == PlayLineMode.api) ...[
                   const Divider(indent: 16),
                   _sourceTile(
                     context,
@@ -304,6 +397,10 @@ class _SettingsPageState extends State<SettingsPage> {
                         .setDataSource(AppConstants.dataSourceOfLine(line.id)),
                   ),
                 ],
+              for (final line in PlayLineResolver.customLines) ...[
+                const Divider(indent: 16),
+                _customLineTile(context, line, settings, seed, outline),
+              ],
             ],
           ),
 
@@ -550,6 +647,74 @@ class _SettingsPageState extends State<SettingsPage> {
     return '${s}x';
   }
 
+  static String _bufferText(int secs) =>
+      secs < 60 ? '$secs秒' : '${secs ~/ 60}分钟';
+
+  /// 数值选项胶囊（trailing 用）
+  Widget _chip(String text, Color seed, bool enabled) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: seed.withValues(alpha: enabled ? 0.14 : 0.06),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: enabled ? seed : Colors.grey,
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
+        ),
+      ),
+    );
+  }
+
+  /// 通用整数选项选择器
+  Future<int?> _pickInt(String title, List<int> options, int current,
+      String Function(int) label, Color seed) {
+    return showModalBottomSheet<int>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(title,
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: seed)),
+                ),
+              ),
+              ...options.map((v) {
+                final selected = v == current;
+                return ListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  leading: selected
+                      ? Icon(Icons.check_rounded, color: seed, size: 20)
+                      : const SizedBox(width: 20),
+                  title: Text(label(v)),
+                  selected: selected,
+                  selectedColor: seed,
+                  onTap: () => Navigator.pop(sheetContext, v),
+                );
+              }),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // ==================== 数据源 ====================
 
   Widget _sourceTile(
@@ -585,6 +750,228 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       onTap: onTap,
     );
+  }
+
+  // ==================== 自定义站点 ====================
+
+  Widget _customLineTile(BuildContext context, PlayLine line,
+      SettingsProvider settings, Color seed, Color outline) {
+    final selected = line.mode == PlayLineMode.api &&
+        settings.dataSource == AppConstants.dataSourceOfLine(line.id);
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      leading:
+          Icon(Icons.dns_outlined, size: 22, color: selected ? seed : outline),
+      title: Text(
+        line.name,
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          color: selected ? seed : null,
+        ),
+      ),
+      subtitle: Text(
+        '${line.mode == PlayLineMode.api ? '自定义整站源' : '自定义网页解析'} · ${line.base}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 12, color: outline),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (line.mode == PlayLineMode.api)
+            selected
+                ? Icon(Icons.check_circle_rounded, color: seed, size: 20)
+                : Icon(Icons.circle_outlined,
+                    size: 18, color: outline.withValues(alpha: 0.4)),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(Icons.delete_outline_rounded,
+                size: 20, color: Colors.redAccent.withValues(alpha: 0.85)),
+            tooltip: '删除站点',
+            onPressed: () => _deleteCustom(line),
+          ),
+        ],
+      ),
+      onTap: line.mode == PlayLineMode.api
+          ? () => context
+              .read<SettingsProvider>()
+              .setDataSource(AppConstants.dataSourceOfLine(line.id))
+          : null,
+    );
+  }
+
+  /// 添加自定义站点：填写地址 → 自动检测 → 通过即保存
+  Future<void> _addCustomSite() async {
+    final baseCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    var mode = PlayLineMode.api;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        var testing = false;
+        var error = '';
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('添加自定义站点', style: TextStyle(fontSize: 17)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: baseCtrl,
+                      autofocus: true,
+                      maxLines: 1,
+                      keyboardType: TextInputType.url,
+                      decoration: const InputDecoration(
+                        labelText: '站点地址',
+                        hintText: 'example.com 或 https://example.com',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: nameCtrl,
+                      maxLines: 1,
+                      decoration: const InputDecoration(
+                        labelText: '站点名称（可选）',
+                        hintText: '留空自动取域名',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('标准接口'),
+                          selected: mode == PlayLineMode.api,
+                          onSelected: (_) => setDialogState(
+                              () => mode = PlayLineMode.api),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('网页解析'),
+                          selected: mode == PlayLineMode.html,
+                          onSelected: (_) => setDialogState(
+                              () => mode = PlayLineMode.html),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      mode == PlayLineMode.api
+                          ? '接口模式可作整站源（首页/搜索/详情/播放全走该站）'
+                          : '网页模式仅用于播放解析，不参与首页/搜索',
+                      style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                    ),
+                    if (testing) ...[
+                      const SizedBox(height: 12),
+                      const Row(
+                        children: [
+                          SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 8),
+                          Text('正在检测站点可用性…',
+                              style: TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                    ],
+                    if (error.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        '检测未通过：$error',
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.redAccent),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              actions: [
+                TextButton(
+                  onPressed: testing ? null : () => Navigator.pop(dialogContext, false),
+                  child: const Text('取消'),
+                ),
+                if (error.isNotEmpty && !testing)
+                  TextButton(
+                    onPressed: () =>
+                        Navigator.pop(dialogContext, true),
+                    child: const Text('仍要添加'),
+                  ),
+                FilledButton(
+                  onPressed: testing
+                      ? null
+                      : () async {
+                          final base =
+                              PlayLineResolver.normalizeBase(baseCtrl.text);
+                          if (base.isEmpty || Uri.tryParse(base) == null) {
+                            setDialogState(() => error = '请填写有效的站点地址');
+                            return;
+                          }
+                          setDialogState(() {
+                            testing = true;
+                            error = '';
+                          });
+                          final reason =
+                              await PlayLineResolver.probeCustom(base, mode);
+                          if (reason != null) {
+                            setDialogState(() {
+                              testing = false;
+                              error = reason;
+                            });
+                            return;
+                          }
+                          final name = nameCtrl.text.trim().isEmpty
+                              ? (Uri.tryParse(base)?.host ?? base)
+                              : nameCtrl.text.trim();
+                          await PlayLineResolver.addCustom(
+                              name: name, base: base, mode: mode);
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext, true);
+                          }
+                        },
+                  child: const Text('检测并添加'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    baseCtrl.dispose();
+    nameCtrl.dispose();
+    if (saved == true) {
+      debugPrint('[SET] custom site added');
+      if (!mounted) return;
+      _toast('自定义站点已添加');
+      setState(() {});
+    }
+  }
+
+  Future<void> _deleteCustom(PlayLine line) async {
+    final ok = await _confirm('删除站点', '确定删除自定义站点「${line.name}」吗？');
+    if (ok != true) return;
+    await PlayLineResolver.removeCustom(line.id);
+    if (!mounted) return;
+    // 数据源/锁定线路指向被删站点时同步复位（与 apikey 清除联动一致）
+    final provider = context.read<SettingsProvider>();
+    if (provider.dataSource == AppConstants.dataSourceOfLine(line.id)) {
+      await provider.setDataSource(AppConstants.dataSourceWeb);
+    }
+    if (provider.pinnedLineId == line.id) {
+      await provider.setPinnedLine('');
+    }
+    debugPrint('[SET] custom site removed ${line.id}');
+    if (!mounted) return;
+    setState(() {});
+    _toast('站点已删除');
   }
 
   /// 编辑/清除 52api apikey，返回是否保存成功

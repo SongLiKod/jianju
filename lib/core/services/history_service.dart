@@ -67,6 +67,18 @@ class HistoryService {
     await upsert(drama, episodeIndex: episodeIndex, episodeItemId: '', positionMs: 0);
   }
 
+  /// 删除单条观看记录
+  static Future<void> remove(String bookId) async {
+    _history.removeWhere((r) => r.drama.bookId == bookId);
+    await _persist();
+  }
+
+  /// 清空全部观看记录
+  static Future<void> clear() async {
+    _history = [];
+    await _persist();
+  }
+
   static List<LocalRecord> _decodeList(String raw) {
     if (raw.isEmpty) return [];
     try {

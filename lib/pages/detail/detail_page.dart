@@ -39,6 +39,7 @@ class _DetailPageState extends State<DetailPage> {
   @override
   void initState() {
     super.initState();
+    debugPrint('[NAV] detail.init ${widget.bookId} auto=${widget.autoContinue}');
     _load();
   }
 
@@ -109,6 +110,7 @@ class _DetailPageState extends State<DetailPage> {
           : 0,
     );
     if (!mounted) return;
+    debugPrint('[NAV] push player #${episode.index}');
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PlayerPage(
@@ -118,6 +120,7 @@ class _DetailPageState extends State<DetailPage> {
         ),
       ),
     );
+    debugPrint('[NAV] back from player');
     if (mounted) setState(() {});
   }
 

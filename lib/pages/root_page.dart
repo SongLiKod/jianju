@@ -21,6 +21,12 @@ class RootPage extends StatefulWidget {
 class _RootPageState extends State<RootPage> {
   int _index = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    debugPrint('[NAV] root.init');
+  }
+
   static const _navItems = [
     NavItem(icon: Icons.home_outlined, activeIcon: Icons.home_rounded, label: '首页'),
     NavItem(icon: Icons.grid_view_outlined, activeIcon: Icons.grid_view_rounded, label: '分类'),
@@ -54,7 +60,10 @@ class _RootPageState extends State<RootPage> {
             items: _navItems,
             currentIndex: _index,
             primaryColor: seed,
-            onTap: (i) => setState(() => _index = i),
+            onTap: (i) {
+              debugPrint('[NAV] tab=$i');
+              setState(() => _index = i);
+            },
           ),
         ),
       ),
