@@ -113,7 +113,7 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  void _switchDataSource(String v) {
+  bool _switchDataSource(String v) {
     final provider = context.read<SettingsProvider>();
     if (v == AppConstants.dataSourceApi52 && !provider.hasApi52Key) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -122,9 +122,103 @@ class _HomePageState extends State<HomePage>
           behavior: SnackBarBehavior.floating,
         ),
       );
-      return;
+      return false;
     }
     provider.setDataSource(v);
+    return true;
+  }
+
+  /// 数据源切换底部弹层：官方源 + 整站线路分组展示，当前项高亮打勾
+  void _showSourceSheet() {
+    final current = context.read<SettingsProvider>().dataSource;
+    final seed =
+        AppPalette.colors[context.read<ThemeProvider>().colorIndex].color;
+    final outline = Theme.of(context).colorScheme.outline;
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        Widget row(String value, String label, String? desc, IconData icon) {
+          final selected = value == current;
+          return ListTile(
+            dense: true,
+            leading: Icon(icon,
+                size: 22, color: selected ? seed : outline),
+            title: Text(label,
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight:
+                        selected ? FontWeight.w700 : FontWeight.w400,
+                    color: selected ? seed : null)),
+            subtitle: desc == null
+                ? null
+                : Text(desc,
+                    style: TextStyle(fontSize: 12, color: outline)),
+            trailing: selected
+                ? Icon(Icons.check_rounded, color: seed, size: 20)
+                : null,
+            onTap: () {
+              if (_switchDataSource(value)) {
+                Navigator.pop(sheetContext);
+              }
+            },
+          );
+        }
+
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(sheetContext).size.height * 0.6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('切换数据源',
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: seed)),
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      row(
+                          AppConstants.dataSourceWeb,
+                          '官方网页源',
+                          '红果官网 · 免配置 · 前 3 集可播',
+                          Icons.language_rounded),
+                      const Divider(indent: 16),
+                      row(
+                          AppConstants.dataSourceApi52,
+                          '52api 红果源',
+                          '全集可播 · 需 apikey',
+                          Icons.cloud_outlined),
+                      for (final line in PlayLineResolver.allLines)
+                        if (line.mode == PlayLineMode.api) ...[
+                          const Divider(indent: 16),
+                          row(
+                              AppConstants.dataSourceOfLine(line.id),
+                              line.name,
+                              Uri.tryParse(line.base)?.host,
+                              Icons.dns_outlined),
+                        ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -144,39 +238,10 @@ class _HomePageState extends State<HomePage>
         ),
         actions: [
           // 数据源/站点切换：整站模式下首页、分类、榜单、搜索全部跟随所选站点
-          PopupMenuButton<String>(
+          IconButton(
             tooltip: '切换数据源',
             icon: const Icon(Icons.dns_outlined),
-            onSelected: _switchDataSource,
-            itemBuilder: (context) {
-              final current =
-                  context.read<SettingsProvider>().dataSource;
-              return [
-                CheckedPopupMenuItem<String>(
-                  value: AppConstants.dataSourceWeb,
-                  checked:
-                      current == AppConstants.dataSourceWeb,
-                  child: const Text('官方网页源'),
-                ),
-                CheckedPopupMenuItem<String>(
-                  value: AppConstants.dataSourceApi52,
-                  checked:
-                      current == AppConstants.dataSourceApi52,
-                  child: const Text('52api 红果源'),
-                ),
-                const PopupMenuDivider(),
-                for (final line in PlayLineResolver.allLines)
-                  if (line.mode == PlayLineMode.api)
-                    CheckedPopupMenuItem<String>(
-                      value:
-                          AppConstants.dataSourceOfLine(line.id),
-                      checked:
-                          current ==
-                              AppConstants.dataSourceOfLine(line.id),
-                      child: Text(line.name),
-                    ),
-              ];
-            },
+            onPressed: _showSourceSheet,
           ),
           IconButton(
             tooltip: '搜索',

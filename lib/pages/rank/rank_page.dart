@@ -136,6 +136,8 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
   void _switchSlug(String slug) {
     if (slug == _slug) return;
     setState(() => _slug = slug);
+    // 切换榜单回到顶部，避免停留在上个榜的滚动位置
+    if (_scroll.hasClients) _scroll.jumpTo(0);
     _refresh();
   }
 

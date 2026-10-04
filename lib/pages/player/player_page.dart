@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -13,7 +14,9 @@ import '../../core/models/drama.dart';
 import '../../core/models/episode.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/history_service.dart';
+import '../../core/services/pip_service.dart';
 import '../../core/services/play_lines.dart';
+import '../../core/services/prebuffer_service.dart';
 import '../../core/state/settings_provider.dart';
 
 /// 播放模块（核心）
@@ -57,6 +60,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Duration _duration = Duration.zero;
   double? _dragValue;
   bool _controlsVisible = true;
+
+  /// 画中画小窗模式（小窗内隐藏所有浮层，只留画面）
+  bool _pipMode = false;
   bool _fullscreen = false;
 
   /// 本集结尾已处理标记：防 completed 与位置兜底双触发、重复换集
@@ -70,15 +76,42 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _preloadReady = false;
   String? _preloadedUrl;
   int _preloadedIndex = -1;
+  bool _preloadLocal = false; // 下一集已跨集预缓存到本地
   DateTime? _preloadFailedAt;
 
   // ==================== 进度跳回防护 ====================
-  /// 最近稳定播放位置（单调递增），用于检测/恢复“长视频中途跳回开头”
+  /// 最近稳定播放位置：正常播放时取到达过的最大值，用户拖动/恢复 seek
+  /// 时更新为目标位，供“跳回 0/早期重置”检测与恢复
   Duration _lastStable = Duration.zero;
+
+  /// mpv demuxer 缓冲到的绝对位置（进度条上显示为“已缓冲”浅色段）
+  Duration _bufferEnd = Duration.zero;
 
   /// 最近一次由我们发起的 seek 时间（其后的回跳是正常行为）
   DateTime? _seekIssuedAt;
-  bool _recoveryVerifying = false;
+
+  /// seek 所有权令牌：每次新 seek（换集/拖动/恢复）自增，
+  /// 旧的校验循环检测到令牌过期即退出，防止多路校验互相打架
+  int _seekToken = 0;
+
+  /// 跳回恢复统计：该 CDN 连接有字节配额、断点固定，越过断点的唯一手段
+  /// 是 seek（成功率不高且常“落位即回退”）。因此恢复改为持久重试+退避：
+  /// 连续整轮失败到顶或总次数到顶才停手
+  int _recoverCount = 0;
+  int _recoverFailStreak = 0;
+  DateTime? _lastRecoverAt;
+  bool _recoverDisabled = false;
+  /// 恢复 seek 校验进行中：期间的跳回事件由校验重试接管，不再重复计划
+  bool _recoverInFlight = false;
+
+  /// 计划中的延迟恢复：断流瞬间 mpv 正在重载，立即 seek 会把刚起来的
+  /// 流再次砸死（实测 300ms 内重载回 0）。改为等新连接从 0 稳定起播
+  /// 若干秒后，再在健康连接上单发 seek 回目标（健康连接上 seek 实测可用）
+  Timer? _recoveryTimer;
+
+  /// 断流类错误的自动恢复观察：可恢复错误先不弹全屏错误，
+  /// 6s 内 mpv 没自己续播才转成真错误提示
+  Timer? _errorWatchdog;
 
   /// 退后台前是否在播放（回前台自动续播用）
   bool _wasPlaying = false;
@@ -95,9 +128,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     _bindStreams();
     _openEpisode(widget.initialEpisode, resumeSaved: true);
+    PipService.ensureAttached();
+    PipService.onChanged = _onPipChanged;
   }
 
   // ==================== 生命周期（退后台 / 回前台） ====================
+
+  void _onPipChanged(bool inPip) {
+    if (!mounted) return;
+    debugPrint('[PIP] mode -> $inPip');
+    setState(() {
+      _pipMode = inPip;
+      if (inPip) _controlsVisible = false;
+    });
+    if (!inPip && _playing) _scheduleHideControls();
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -122,15 +167,43 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _bindStreams() {
     _subs
-      ..add(_player.stream.playing
-          .listen((v) => mountedSafe(() => setState(() => _playing = v))))
+      ..add(_player.stream.playing.listen((v) {
+        if (!mounted) return;
+        if (v) _errorWatchdog?.cancel(); // 已恢复播放，撤销断流错误观察
+        setState(() => _playing = v);
+        // 告知原生是否在播放（Home 键自动进画中画的依据）
+        PipService.setActive(v && !_loading);
+      }))
       ..add(_player.stream.position.listen(_onPosition))
       ..add(_player.stream.duration
           .listen((v) => mountedSafe(() => setState(() => _duration = v))))
+      ..add(_player.stream.buffer
+          .listen((v) => mountedSafe(() => setState(() => _bufferEnd = v))))
       ..add(_player.stream.error.listen((e) {
         if (e.isNotEmpty && mounted && !_loading) {
           debugPrint('[EP] player error: $e');
-          mountedSafe(() => setState(() => _error = '播放出错：$e'));
+          PipService.setActive(false);
+          // CDN 中途掐线（ffurl_read -103/ECONNABORTED、超时等）mpv 会
+          // 自动重载续播，属可恢复错误：先只记日志，6s 没恢复才转错误页
+          final recoverable = RegExp(
+                  r'ffurl_read|tcp:|timeout|timed out|Connection|'
+                  r'ECONNABORTED|Network is unreachable|Broken pipe',
+                  caseSensitive: false)
+              .hasMatch(e);
+          if (!recoverable) {
+            mountedSafe(() => setState(() => _error = '播放出错：$e'));
+            return;
+          }
+          final seq = _openSeq;
+          final pAt = _player.state.position;
+          _errorWatchdog?.cancel();
+          _errorWatchdog = Timer(const Duration(seconds: 6), () {
+            if (!mounted || seq != _openSeq || _error.isNotEmpty) return;
+            if (!_loading && !_playing && _player.state.position == pAt) {
+              debugPrint('[EP] 断流 6s 未自动恢复，转为错误提示');
+              setState(() => _error = '播放出错：$e');
+            }
+          });
         }
       }));
     // 播放完毕自动跳转下一集（换集瞬间的过期 completed 由 _loading/_endHandled 拦截）
@@ -178,6 +251,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 若非用户主动拖动（[_seekIssuedAt] 窗口内），自动 seek 回最近稳定位置。
   void _recoverJumpBack(Duration prev, Duration v) {
     if (_loading || _dragValue != null || _endHandled) return;
+    if (_recoverDisabled) return;
+    // 仅真实跳变事件才进入判定：正常播放的逐 tick 位置事件
+    // （如重载后 00:00→00:04 连续推进）不重复触发，防止连败数被刷爆
+    if (prev - v <= const Duration(seconds: 2)) return;
     final sinceSeek = _seekIssuedAt == null
         ? const Duration(days: 1)
         : DateTime.now().difference(_seekIssuedAt!);
@@ -185,46 +262,137 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (_duration < const Duration(seconds: 60)) return;
 
     final bigBack = prev - v > const Duration(seconds: 30);
+    // 断流重载把 playhead 砸回开头：早期段（开场前几秒）同样要恢复，
+    // 否则新集开场反复重播片头（prev > 3s 才算真实播放过，避开起播 0 事件）
     final restartToZero =
-        v < const Duration(seconds: 5) && prev > const Duration(seconds: 60);
+        v < const Duration(seconds: 5) && prev > const Duration(seconds: 3);
     if (!bigBack && !restartToZero) return;
-    if (_lastStable <= v + const Duration(seconds: 10)) return;
+    // 安全区：重载落在非零锚点（mpv 会记住上次成功 seek 的位置）且差距
+    // 不大时，自然续播即可免费覆盖已看段落，不冒 seek 砸死流的风险
+    if (v >= const Duration(seconds: 10) &&
+        prev - v <= const Duration(seconds: 45)) {
+      return;
+    }
+    // 距最近稳定位不足 2s 视为正常抖动/起播，不干预
+    if (_lastStable <= v + const Duration(seconds: 2)) return;
 
+    // 恢复 seek 校验进行中：跳回由校验重试接管，不重复计划
+    if (_recoverInFlight) return;
+    // 已有计划中的恢复：不重复调度/计数
+    if (_recoveryTimer != null) return;
+
+    final now = DateTime.now();
+    // 两次恢复至少隔 15s；连续整轮失败 10 次或累计 40 次 → 停手放养。
+    // 断点固定时越过断点只能靠 seek（失败仅损失“已看段的重看”，不亏），
+    // 故预算给足；失败节奏由退避（12→30s）压住，避免打爆 CDN
+    if (_lastRecoverAt != null &&
+        now.difference(_lastRecoverAt!) < const Duration(seconds: 15)) {
+      return;
+    }
+    if (_recoverFailStreak >= 10 || _recoverCount >= 40) {
+      _recoverDisabled = true;
+      debugPrint('[POS] 恢复预算用尽（总数 $_recoverCount'
+          '/连续失败 $_recoverFailStreak）→ 停止干预，自然续播');
+      return;
+    }
+    _recoverCount++;
+    _lastRecoverAt = now;
     final target = _lastStable;
+
     debugPrint('[POS] 异常跳回 ${_fmt(v)}（上一帧 ${_fmt(prev)}）'
-        ' → 恢复到 ${_fmt(target)}');
-    _seekIssuedAt = DateTime.now();
-    _player.seek(target).then((_) {
-      debugPrint('[POS] 恢复 seek 完成 -> ${_fmt(target)}');
-      _verifyJumpRecovery(target);
-    }).catchError((Object e) {
-      debugPrint('[POS] 恢复 seek 失败: $e');
-    });
+        ' → 计划 8s 后恢复到 ${_fmt(target)}（第 $_recoverCount 次）');
+    final seq = _openSeq;
+    _recoveryTimer =
+        Timer(const Duration(seconds: 8), () => _executeRecovery(target, seq, 0));
   }
 
-  /// 恢复 seek 后校验：断流重载可能在恢复后再次把位置砸回 0
-  /// （且落在 seek 宽限窗内不触发新一轮检测），故每 3s 检查一次漂移，
-  /// 偏离 >15s 则再恢复，最多 3 轮。用户拖动或换集即中止。
-  Future<void> _verifyJumpRecovery(Duration target) async {
-    if (_recoveryVerifying) return;
-    _recoveryVerifying = true;
-    try {
-      for (var i = 0; i < 3; i++) {
-        await Future<void>.delayed(const Duration(seconds: 3));
-        if (!mounted || _loading || _endHandled || _dragValue != null) return;
-        final p = _player.state.position;
-        if ((p - target).abs() <= const Duration(seconds: 15)) return;
-        debugPrint('[POS] 恢复未保持 ${_fmt(p)}，再恢复 -> ${_fmt(target)}');
-        _seekIssuedAt = DateTime.now();
-        try {
-          await _player.seek(target);
-        } catch (_) {
-          return;
-        }
+  /// 执行计划中的恢复：流必须已稳定起播（>3s）才 seek——重载中 seek 会把
+  /// 刚起来的流再次砸死（实测 300ms 内重载回 0）。未稳定则最多重试 3 轮。
+  /// seek 后必须“落位且推进”才算成功（防“落位即冻结→回退”的过早放行）；
+  /// 失败则退避后重试——该 CDN 断点固定，seek 是唯一出路
+  Future<void> _executeRecovery(Duration target, int seq, int attempt) async {
+    _recoveryTimer = null;
+    if (!mounted || seq != _openSeq || _recoverDisabled) return;
+    if (_loading || _endHandled || _dragValue != null) return;
+    final p = _player.state.position;
+    if (p < const Duration(seconds: 3)) {
+      if (attempt < 2) {
+        debugPrint('[POS] 恢复暂缓：流未稳定起播（当前 ${_fmt(p)}），'
+            '8s 后重试（第 ${attempt + 2} 次）');
+        _recoveryTimer = Timer(const Duration(seconds: 8),
+            () => _executeRecovery(target, seq, attempt + 1));
+        return;
       }
-    } finally {
-      _recoveryVerifying = false;
+      debugPrint('[POS] 放弃本轮恢复：流一直未稳定起播');
+      _undoRecoveryCycle();
+      return;
     }
+    if (p + const Duration(seconds: 10) >= target) {
+      debugPrint('[POS] 恢复取消：流已自行推进到 ${_fmt(p)}');
+      _undoRecoveryCycle();
+      return;
+    }
+    _recoverInFlight = true;
+    // 等 readahead 覆盖目标再 seek：缓存内 seek 走本地（拖动实测必成、无
+    // Resize）；越过缓存的网络 range 在该 CDN 上必触发 tcp -103 掐线，
+    // 形成 seek→重载→回 0 死循环（实测 0/24 次全败即此因）。
+    // 边界必须取 target+3s：缓冲刚到 target-3s 就放行时 seek 点仍在缓存外
+    // （实测缓冲 01:08/目标 01:11 即败），须留安全余量
+    final deadline = DateTime.now().add(const Duration(seconds: 45));
+    while (_bufferEnd < target + const Duration(seconds: 3)) {
+      if (DateTime.now().isAfter(deadline)) {
+        debugPrint('[POS] 等缓冲覆盖超时（缓冲 ${_fmt(_bufferEnd)}'
+            ' < 目标 ${_fmt(target)}），仍尝试 seek');
+        break;
+      }
+      if (!mounted || seq != _openSeq || _recoverDisabled || _loading ||
+          _endHandled || _dragValue != null) {
+        _recoverInFlight = false;
+        return;
+      }
+      final cur = _player.state.position;
+      if (cur + const Duration(seconds: 10) >= target) {
+        debugPrint('[POS] 恢复取消：等待缓冲期间已推进到 ${_fmt(cur)}');
+        _recoverInFlight = false;
+        _undoRecoveryCycle();
+        return;
+      }
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    debugPrint('[POS] 执行恢复 seek -> ${_fmt(target)}'
+        '（当前 ${_fmt(_player.state.position)}，缓冲 ${_fmt(_bufferEnd)}）');
+    final ok =
+        await _seekWithVerify(target, seq, requireAdvance: true);
+    _recoverInFlight = false;
+    if (!mounted || seq != _openSeq) return;
+    if (ok) {
+      _recoverFailStreak = 0;
+      debugPrint('[POS] 恢复成功：已站稳 ${_fmt(_player.state.position)}');
+      return;
+    }
+    if (_dragValue != null || _endHandled) return; // 用户接管，不再重试
+    _recoverFailStreak++;
+    if (_recoverFailStreak >= 10 || _recoverCount >= 40) {
+      _recoverDisabled = true;
+      debugPrint('[POS] 恢复预算用尽（总数 $_recoverCount'
+          '/连续失败 $_recoverFailStreak）→ 停止干预，自然续播');
+      return;
+    }
+    // 退避重试：12/16/20/25/30s 封顶；失败只损失已看段的重看，不亏
+    const backoff = [12, 16, 20, 25, 30];
+    final delaySec = backoff[(_recoverFailStreak - 1).clamp(0, 4)];
+    _recoverCount++;
+    _lastRecoverAt = DateTime.now();
+    debugPrint('[POS] 恢复未站稳（连续失败 $_recoverFailStreak），'
+        '${delaySec}s 后重试 → ${_fmt(target)}');
+    _recoveryTimer = Timer(Duration(seconds: delaySec),
+        () => _executeRecovery(target, seq, attempt + 1));
+  }
+
+  /// 撤销一个“从未出手”的恢复周期：归还预算与冷却窗口
+  void _undoRecoveryCycle() {
+    if (_recoverCount > 0) _recoverCount--;
+    _lastRecoverAt = null;
   }
 
   // ==================== 预载下一集 ====================
@@ -255,9 +423,40 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final seq = _openSeq;
     debugPrint('[PRE] 预载第${next.index}集（剩 ${remain.inSeconds}s）');
     _preload(next, seq);
+    _startPrebufferChain(); // 结尾补跑跨集预缓存（开播时触发失败则此处重试）
+  }
+
+  /// 跨集预缓存：缓冲设置 = 当前集读取余量 + 后续几集本地预下载预算。
+  /// 播放开始即触发（不等结尾），顺序把下一集、下下集…下载到本地，
+  /// 换集时直接本地起播，黑屏降到毫秒级。
+  void _startPrebufferChain() {
+    final bufferSecs = context.read<SettingsProvider>().bufferSecs;
+    if (bufferSecs < PrebufferService.minBudgetSecs) return;
+    debugPrint('[PBF] 触发跨集预缓存（第${_episode.index}集起，'
+        '预算 ${bufferSecs}s）');
+    PrebufferService.prefetchChain(
+      bookId: widget.drama.bookId,
+      title: widget.drama.title,
+      episodes: widget.episodes,
+      fromIndex: _episode.index,
+      bufferSecs: bufferSecs,
+    );
   }
 
   Future<void> _preload(Episode next, int seq) async {
+    // 跨集预缓存已就位：本地文件可直接开播，无需再解析直链
+    final local =
+        await PrebufferService.localPathFor(widget.drama.bookId, next.index);
+    if (local != null && mounted && seq == _openSeq) {
+      setState(() {
+        _preloadedUrl = null;
+        _preloadedIndex = next.index;
+        _preloadLocal = true;
+        _preloadReady = true;
+      });
+      debugPrint('[PBF] 第${next.index}集已在本地缓存，无需解析');
+      return;
+    }
     try {
       final url = await ApiService.fetchPlayUrl(
         seriesId: widget.drama.bookId,
@@ -269,6 +468,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       setState(() {
         _preloadedUrl = url;
         _preloadedIndex = next.index;
+        _preloadLocal = false;
         _preloadReady = true;
       });
       debugPrint('[PRE] 预载完成 #${next.index}');
@@ -294,7 +494,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final next = _nextPlayable;
     if (next == null) return const SizedBox.shrink();
     final label = _preloadReady
-        ? '即将播放第${next.index}集 · ${remain.inSeconds}s'
+        ? (_preloadLocal
+            ? '已缓存第${next.index}集 · ${remain.inSeconds}s'
+            : '即将播放第${next.index}集 · ${remain.inSeconds}s')
         : '正在预载第${next.index}集…';
     return Positioned(
       top: MediaQuery.paddingOf(context).top + 54,
@@ -345,32 +547,55 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   // ==================== 换集 / 播放源 ====================
 
+  /// 换集统一入口：命中跨集预缓存则本地起播（免解析、免网络首缓冲）
+  Future<void> _openEpisodeSmart(Episode ep) async {
+    final local =
+        await PrebufferService.localPathFor(widget.drama.bookId, ep.index);
+    if (!mounted) return;
+    await _openEpisode(ep, localPath: local);
+  }
+
   Future<void> _openEpisode(
     Episode episode, {
     bool resumeSaved = false,
     String? presetUrl,
     Duration? resumeAt,
+    String? localPath,
   }) async {
     if (!mounted) return;
     debugPrint('[EP] open #${episode.index} resume=$resumeSaved'
+        '${localPath != null ? ' local=1' : ''}'
         '${presetUrl != null ? ' preset=1' : ''}'
         '${resumeAt != null ? ' at=${_fmt(resumeAt)}' : ''}');
     final seq = ++_openSeq;
     _endHandled = false;
+    PipService.setActive(false); // 解析/换集期间不满足自动小窗条件
     // 预载/进度防护状态属于上一集，换集即重置
     _preloadStarted = false;
     _preloadReady = false;
     _preloadedUrl = null;
     _preloadedIndex = -1;
+    _preloadLocal = false;
     _preloadFailedAt = null;
     _lastStable = Duration.zero;
     _seekIssuedAt = null;
+    _seekToken++; // 作废上一集遗留的 seek 校验循环
+    _recoverCount = 0;
+    _recoverFailStreak = 0;
+    _lastRecoverAt = null;
+    _recoverInFlight = false;
+    _recoverDisabled = false;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
+    _errorWatchdog?.cancel();
+    _errorWatchdog = null;
     setState(() {
       _episode = episode;
       _loading = true;
       _error = '';
       _position = Duration.zero;
       _duration = Duration.zero;
+      _bufferEnd = Duration.zero;
       _dragValue = null;
     });
     // 历史指针跟随当前集：自动下一集后不再停留在旧集
@@ -386,9 +611,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!mounted || seq != _openSeq) return;
     _startProgressSaving();
     try {
-      // 1) 获取播放直链：预载命中直接用，否则走官方直链/线路竞速
+      // 1) 获取播放直链：本地缓存 > 预载直链 > 官方直链/线路竞速
       final String playUrl;
-      if (presetUrl != null) {
+      if (localPath != null && File(localPath).existsSync()) {
+        debugPrint('[PBF] #${episode.index} 本地缓存起播（跳过解析）');
+        playUrl = localPath;
+      } else if (presetUrl != null) {
         debugPrint('[EP] #${episode.index} 使用预载直链（跳过解析）');
         playUrl = presetUrl;
       } else {
@@ -420,8 +648,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         if (!mounted || seq != _openSeq) return;
       }
       setState(() => _loading = false);
+      PipService.setActive(_playing);
       debugPrint('[EP] opened #${episode.index} ready');
       _scheduleHideControls();
+      _startPrebufferChain(); // 播放一开始即跨集预缓存（不等结尾）
     } catch (e) {
       if (!mounted || seq != _openSeq) return;
       debugPrint('[EP] open failed #${episode.index}: $e');
@@ -465,24 +695,46 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   /// seek 后校验：每 4s 检查一次位置与目标的漂移，若 >15s（加载完成后
   /// mpv 可能把 playhead 重锚到 0，丢掉加载期发出的 seek）则重试，
-  /// 最多 3 轮，命中即停。随 _seekWhenReady await 执行。
-  Future<void> _seekWithVerify(Duration target, int seq) async {
+  /// 最多 3 轮，命中即停。入口接管 seek 令牌，旧校验循环自动退出。
+  /// [requireAdvance] 为 true（恢复路径）时额外要求“落位且真在推进”
+  /// ——防“落位即冻结、数秒后回退 0”的假成功；返回是否站稳。
+  Future<bool> _seekWithVerify(Duration target, int seq,
+      {bool requireAdvance = false}) async {
+    final tok = ++_seekToken;
+    _seekIssuedAt = DateTime.now();
     if (target <= const Duration(seconds: 10)) {
-      _seekIssuedAt = DateTime.now();
       await _player.seek(target);
-      return;
+      return true;
     }
-    for (var attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) _seekIssuedAt = DateTime.now();
+    final rounds = requireAdvance ? 4 : 3;
+    for (var attempt = 0; attempt < rounds; attempt++) {
+      if (tok != _seekToken) return false; // 已被更新的 seek/换集接管
+      _seekIssuedAt = DateTime.now(); // 重试期间同样屏蔽跳回恢复，避免双机制打架
       await _player.seek(target);
       await Future<void>.delayed(const Duration(seconds: 4));
-      if (!mounted || seq != _openSeq) return;
-      final p = _player.state.position;
-      final drift = (p - target).abs();
-      if (drift <= const Duration(seconds: 15)) return;
-      debugPrint('[EP] seek 未生效(第${attempt + 1}次)，重试 -> '
+      if (!mounted || seq != _openSeq) return false;
+      if (tok != _seekToken) return false;
+      var p = _player.state.position;
+      if ((p - target).abs() > const Duration(seconds: 15)) {
+        debugPrint('[EP] seek 未生效(第${attempt + 1}次)，重试 -> '
+            '${_fmt(target)}（当前 ${_fmt(p)}）');
+        continue;
+      }
+      if (!requireAdvance) return true;
+      // 落位后确认流在推进（4s 内至少前进 2s），否则视为假落位
+      final p1 = p;
+      await Future<void>.delayed(const Duration(seconds: 4));
+      if (!mounted || seq != _openSeq) return false;
+      if (tok != _seekToken) return false;
+      p = _player.state.position;
+      if ((p - target).abs() <= const Duration(seconds: 15) &&
+          p - p1 >= const Duration(seconds: 2)) {
+        return true;
+      }
+      debugPrint('[EP] 恢复 seek 未站稳(第${attempt + 1}次) -> '
           '${_fmt(target)}（当前 ${_fmt(p)}）');
     }
+    return false;
   }
 
   // ==================== 进度记忆 ====================
@@ -520,10 +772,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!mounted || seq != _openSeq) return;
     final next = _nextPlayable;
     if (next != null) {
-      final preset =
-          _preloadReady && _preloadedIndex == next.index ? _preloadedUrl : null;
-      if (preset != null) debugPrint('[PRE] 结尾用预载直链开 #${next.index}');
-      _openEpisode(next, presetUrl: preset);
+      final local = await PrebufferService.localPathFor(
+          widget.drama.bookId, next.index);
+      final preset = _preloadReady && _preloadedIndex == next.index
+          ? _preloadedUrl
+          : null;
+      if (local != null) {
+        debugPrint('[PBF] 结尾用本地缓存开 #${next.index}');
+      } else if (preset != null) {
+        debugPrint('[PRE] 结尾用预载直链开 #${next.index}');
+      }
+      _openEpisode(next, presetUrl: preset, localPath: local);
       return;
     }
     setState(() => _playing = false);
@@ -753,9 +1012,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   // ==================== 分集列表 ====================
 
-  void _showEpisodeSheet() {
+  /// 已跨集预缓存到本地的集号（选集列表"已缓存"标记）
+  Set<int> _cachedEps = const {};
+
+  /// 打开选集面板前刷新本地缓存快照（文件系统遍历，毫秒级）
+  Future<void> _refreshCachedEps() async {
+    final set = <int>{};
+    for (final ep in widget.episodes) {
+      if (!ep.playable) continue;
+      final p = await PrebufferService.localPathFor(
+          widget.drama.bookId, ep.index);
+      if (p != null) set.add(ep.index);
+    }
+    if (!mounted) return;
+    setState(() => _cachedEps = set);
+  }
+
+  Future<void> _showEpisodeSheet() async {
     debugPrint('[UI] episodeSheet.show');
     _showControls();
+    await _refreshCachedEps();
+    if (!mounted) return;
     final seed = Theme.of(context).colorScheme.primary;
     showModalBottomSheet<void>(
       context: context,
@@ -816,12 +1093,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         trailing: locked
                             ? const Icon(Icons.lock_outline_rounded,
                                 size: 16, color: Colors.grey)
-                            : null,
+                            : (_cachedEps.contains(ep.index)
+                                ? Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Text('已缓存',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.green)),
+                                  )
+                                : null),
                         onTap: locked
                             ? null
                             : () {
                                 Navigator.pop(sheetContext);
-                                _openEpisode(ep);
+                                _openEpisodeSmart(ep);
                               },
                       );
                     },
@@ -1003,8 +1293,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             if (_loading) _buildLoading(),
             if (_error.isNotEmpty) _buildError(),
             _buildControls(context),
-            _buildPreloadHint(),
-            if (!_loading && _error.isEmpty) _buildSlimProgress(context),
+            if (!_pipMode) _buildPreloadHint(),
+            if (!_pipMode && !_loading && _error.isEmpty) _buildSlimProgress(context),
           ],
         ),
       ),
@@ -1018,6 +1308,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     if (_duration <= Duration.zero) return const SizedBox.shrink();
     final p = (_position.inMilliseconds / _duration.inMilliseconds)
+        .clamp(0.0, 1.0);
+    final bp = (_bufferEnd.inMilliseconds / _duration.inMilliseconds)
         .clamp(0.0, 1.0);
     final seed = Theme.of(context).colorScheme.primary;
     final bottomPad =
@@ -1033,6 +1325,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             fit: StackFit.expand,
             children: [
               Container(color: Colors.white12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: bp,
+                  child: Container(color: Colors.white30),
+                ),
+              ),
               Align(
                 alignment: Alignment.centerLeft,
                 child: FractionallySizedBox(
@@ -1120,6 +1419,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Widget _buildControls(BuildContext context) {
+    if (_pipMode) return const SizedBox.shrink(); // 小窗内不叠任何浮层
     final visible = _controlsVisible;
     return AnimatedOpacity(
       opacity: visible ? 1 : 0,
@@ -1234,6 +1534,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   child: SliderTheme(
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 3,
+                      // 已缓冲段：从进度头延伸到 demuxer 缓冲位（浅色）
+                      trackShape: _BufferedSliderTrackShape(
+                        bufferedColor: Colors.white30,
+                        bufferedFraction: _duration <= Duration.zero
+                            ? 0
+                            : (_bufferEnd.inMilliseconds /
+                                    _duration.inMilliseconds)
+                                .clamp(0.0, 1.0),
+                      ),
                       thumbShape:
                           const RoundSliderThumbShape(enabledThumbRadius: 7),
                       overlayShape:
@@ -1252,9 +1561,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       onChangeEnd: (v) {
                         final target = Duration(
                             milliseconds: (v * _duration.inMilliseconds).round());
-                        _seekIssuedAt = DateTime.now();
-                        _player.seek(target);
+                        // 用户接管：取消计划中的延迟恢复，防止它把
+                        // 进度拽回上一个恢复目标
+                        _recoveryTimer?.cancel();
+                        _recoveryTimer = null;
+                        // 恢复目标锚到用户意图位：拖动后 mpv 若重锚到 0，
+                        // 跳回防护会恢复到目标而不是旧的稳定位
+                        _lastStable = target;
                         setState(() => _dragValue = null);
+                        // 带漂移校验：缓冲期发出的 seek 可能被 mpv 丢弃，
+                        // 加载完成后从头播（校验发现漂移>15s 会重试）
+                        _seekWithVerify(target, _openSeq);
                       },
                     ),
                   ),
@@ -1275,14 +1592,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 _toolButton(context, Icons.skip_previous_rounded,
                     _prevEpisode != null ? '上一集' : '',
                     _prevEpisode != null
-                        ? () => _openEpisode(_prevEpisode!)
+                        ? () => _openEpisodeSmart(_prevEpisode!)
                         : null),
                 _toolButton(
                     context,
                     Icons.skip_next_rounded,
                     _hasNextPlayable ? '下一集' : '',
-                    _hasNextPlayable ? () => _openEpisode(_nextPlayable!) : null),
+                    _hasNextPlayable
+                        ? () => _openEpisodeSmart(_nextPlayable!)
+                        : null),
                 const Spacer(),
+                if (PipService.isSupported)
+                  _toolButton(
+                      context,
+                      Icons.picture_in_picture_alt_rounded,
+                      '弹窗播放',
+                      _playing && !_loading
+                          ? () {
+                              setState(() => _controlsVisible = false);
+                              PipService.enterPip();
+                            }
+                          : null),
                 _toolButton(
                     context,
                     _fullscreen
@@ -1344,10 +1674,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     _progressTimer?.cancel();
     _hideTimer?.cancel();
+    _recoveryTimer?.cancel();
+    _errorWatchdog?.cancel();
     _completedSub?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
+    PipService.onChanged = null;
+    PipService.setActive(false);
     WidgetsBinding.instance.removeObserver(this);
     _player.dispose();
     _exitFullscreenIfAny();
@@ -1359,4 +1693,73 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 class PlatformCheck {
   static bool get isAndroid =>
       defaultTargetPlatform == TargetPlatform.android;
+}
+
+/// 进度条轨道：在标准“已播/未播”两段之上，补一段“已缓冲”浅色区间
+/// （进度头 → demuxer 缓冲位）。缓冲位不足进度头时不绘制。
+class _BufferedSliderTrackShape extends RoundedRectSliderTrackShape {
+  const _BufferedSliderTrackShape({
+    required this.bufferedColor,
+    required this.bufferedFraction,
+  });
+
+  final Color bufferedColor;
+  final double bufferedFraction;
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset offset, {
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required Animation<double> enableAnimation,
+    required TextDirection textDirection,
+    required Offset thumbCenter,
+    Offset? secondaryOffset,
+    bool isDiscrete = false,
+    bool isEnabled = false,
+    double additionalActiveTrackHeight = 2,
+  }) {
+    super.paint(
+      context,
+      offset,
+      parentBox: parentBox,
+      sliderTheme: sliderTheme,
+      enableAnimation: enableAnimation,
+      textDirection: textDirection,
+      thumbCenter: thumbCenter,
+      secondaryOffset: secondaryOffset,
+      isDiscrete: isDiscrete,
+      isEnabled: isEnabled,
+      additionalActiveTrackHeight: additionalActiveTrackHeight,
+    );
+    final trackHeight = sliderTheme.trackHeight;
+    if (trackHeight == null ||
+        trackHeight <= 0 ||
+        bufferedFraction <= 0 ||
+        bufferedFraction > 1) {
+      return;
+    }
+    final trackRect = getPreferredRect(
+      parentBox: parentBox,
+      offset: offset,
+      sliderTheme: sliderTheme,
+      isEnabled: isEnabled,
+      isDiscrete: isDiscrete,
+    );
+    final bufferX = (trackRect.left + trackRect.width * bufferedFraction)
+        .clamp(trackRect.left, trackRect.right);
+    // 缓冲位没超过进度头：整段都被“已播”覆盖，无需绘制
+    if (bufferX <= thumbCenter.dx + trackHeight / 2) return;
+    final paint = Paint()..color = bufferedColor;
+    context.canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromLTRB(
+            thumbCenter.dx + trackHeight / 2, trackRect.top, bufferX, trackRect.bottom),
+        topRight: Radius.circular(trackHeight / 2),
+        bottomRight: Radius.circular(trackHeight / 2),
+      ),
+      paint,
+    );
+  }
 }

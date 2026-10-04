@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
@@ -6,6 +7,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/services/cache_service.dart';
 import '../../core/services/device_service.dart';
 import '../../core/services/play_lines.dart';
+import '../../core/services/prebuffer_service.dart';
 import '../../core/services/token_service.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
@@ -39,7 +41,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _loadCacheSize() async {
-    final bytes = await CacheService.imageSizeBytes();
+    final bytes = await CacheService.imageSizeBytes() +
+        await PrebufferService.totalBytes();
     if (!mounted) return;
     setState(() => _cacheSize = CacheService.formatSize(bytes));
   }
@@ -52,9 +55,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _clearCache() async {
     await CacheService.clearImageCache();
+    await PrebufferService.clear();
     if (!mounted) return;
     setState(() => _cacheSize = '0 B');
-    _toast('图片缓存已清除');
+    _toast('缓存已清除（图片 + 跨集预缓存）');
   }
 
   Future<void> _resetDeviceId() async {
@@ -229,8 +233,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: const Text('预载下一集',
                     style: TextStyle(fontSize: 15)),
                 subtitle: Text(
-                  '本集结束前 ${settings.preloadLeadSec} 秒提前解析下一集，'
-                  '播完立即接上（右上角有倒计时提示）',
+                  '本集结束前 ${settings.preloadLeadSec} 秒提前解析下一集直链'
+                  '（配合缓冲大小的跨集缓存，换集无缝接上）',
                   style: TextStyle(fontSize: 12, color: outline),
                 ),
                 value: settings.preloadNext,
@@ -266,7 +270,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     color: outline, size: 22),
                 title: const Text('缓冲大小（网络提速）',
                     style: TextStyle(fontSize: 15)),
-                subtitle: Text('越大越不容易卡顿，弱网建议选大',
+                subtitle: Text(
+                    '总预算跨集使用：当前集读取余量 + 自动预缓存下一集、'
+                    '下下集……换集秒开不黑屏',
                     style: TextStyle(fontSize: 12, color: outline)),
                 trailing: _chip(_bufferText(settings.bufferSecs), seed, true),
                 onTap: () async {
@@ -277,6 +283,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     settings.bufferSecs,
                     _bufferText,
                     seed,
+                    onCustom: () => _pickCustomBufferSecs(settings.bufferSecs),
                   );
                   if (v != null) provider.setBufferSecs(v);
                 },
@@ -671,7 +678,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 通用整数选项选择器
   Future<int?> _pickInt(String title, List<int> options, int current,
-      String Function(int) label, Color seed) {
+      String Function(int) label, Color seed,
+      {Future<int?> Function()? onCustom}) {
     return showModalBottomSheet<int>(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -707,7 +715,68 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: () => Navigator.pop(sheetContext, v),
                 );
               }),
+              if (onCustom != null)
+                ListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  leading: const Icon(Icons.edit_rounded, size: 20),
+                  title: const Text('自定义…'),
+                  onTap: () async {
+                    final v = await onCustom();
+                    if (v != null && sheetContext.mounted) {
+                      Navigator.pop(sheetContext, v);
+                    }
+                  },
+                ),
               const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 自定义缓冲大小（分钟输入，1~60），返回秒数
+  Future<int?> _pickCustomBufferSecs(int currentSecs) {
+    final controller = TextEditingController(
+        text: currentSecs >= 60 && currentSecs % 60 == 0
+            ? '${currentSecs ~/ 60}'
+            : '');
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        String? error;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('自定义缓冲大小'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(
+                labelText: '分钟数',
+                hintText: '1 - 60',
+                suffixText: '分钟',
+                errorText: error,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  final mins = int.tryParse(controller.text.trim()) ?? 0;
+                  if (mins < 1 || mins > 60) {
+                    setDialogState(() => error = '请输入 1~60 之间的分钟数');
+                    return;
+                  }
+                  Navigator.pop(ctx, mins * 60);
+                },
+                child: const Text('确定'),
+              ),
             ],
           ),
         );

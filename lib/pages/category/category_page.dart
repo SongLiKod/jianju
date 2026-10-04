@@ -129,6 +129,8 @@ class _CategoryPageState extends State<CategoryPage>
   void _switchSlug(String slug) {
     if (slug == _slug) return;
     setState(() => _slug = slug);
+    // 切换分类回到顶部，避免停留在上个分类的滚动位置
+    if (_scroll.hasClients) _scroll.jumpTo(0);
     _refresh();
   }
 

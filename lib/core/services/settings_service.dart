@@ -63,9 +63,14 @@ class SettingsService {
   static Future<void> setPreloadLeadSec(int v) =>
       StorageService.setString(AppConstants.keyPreloadLead, '$v');
 
-  /// 网络缓冲秒数（mpv cache-secs，越大越不容易卡顿）
-  static int get bufferSecs => _intOf(AppConstants.keyBufferSecs,
-      AppConstants.bufferOptions, AppConstants.defaultBufferSecs);
+  /// 网络缓冲秒数（mpv cache-secs + 跨集预缓存预算）。
+  /// 自定义分钟数（×60）不在预设列表内，故只做范围钳制、不按列表校验，
+  /// 否则重启后会读回默认值（曾导致自定义 5 分钟重启后变 20 秒）
+  static int get bufferSecs {
+    final v = int.tryParse(StorageService.getString(AppConstants.keyBufferSecs));
+    if (v == null || v < 1) return AppConstants.defaultBufferSecs;
+    return v > 3600 ? 3600 : v;
+  }
 
   static Future<void> setBufferSecs(int v) =>
       StorageService.setString(AppConstants.keyBufferSecs, '$v');
