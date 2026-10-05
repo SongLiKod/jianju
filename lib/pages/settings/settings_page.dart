@@ -9,11 +9,13 @@ import '../../core/services/device_service.dart';
 import '../../core/services/play_lines.dart';
 import '../../core/services/prebuffer_service.dart';
 import '../../core/services/token_service.dart';
+import '../../core/services/update_service.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/responsive.dart';
 import '../../widgets/clickable.dart';
+import '../../widgets/update_flow.dart';
 
 /// 设置页面（所有用户可修改配置项统一收纳于此，全局默认值以本页为准）
 ///
@@ -22,7 +24,7 @@ import '../../widgets/clickable.dart';
 /// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置 + 整站站点列表
 /// 4. 缓存管理区域：查看/一键清除图片缓存
 /// 5. 账号与设备区域：重置设备 ID / 退出登录（清除token）
-/// 6. 关于页面区域：项目版本信息
+/// 6. 关于页面区域：项目版本信息 + 检查更新 + 使用声明
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -506,14 +508,74 @@ class _SettingsPageState extends State<SettingsPage> {
                         color: outline,
                         fontWeight: FontWeight.w600)),
               ),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.system_update_alt_rounded,
+                    color: outline, size: 22),
+                title: const Text('检查更新', style: TextStyle(fontSize: 15)),
+                subtitle: Text('发现新版后在应用内下载安装，不离开软件',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: Icon(Icons.chevron_right_rounded,
+                    color: outline.withValues(alpha: 0.6)),
+                onTap: _checkUpdate,
+              ),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.assignment_outlined,
+                    color: outline, size: 22),
+                title: const Text('使用声明', style: TextStyle(fontSize: 15)),
+                subtitle: Text('知识产权 · 非商业使用 · 免责条款',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: Icon(Icons.chevron_right_rounded,
+                    color: outline.withValues(alpha: 0.6)),
+                onTap: _showStatement,
+              ),
             ],
           ),
           const SizedBox(height: 16),
-          Center(
-            child: Text(
-              '仅用于个人学习研究 · 非商用',
-              style: TextStyle(fontSize: 11, color: outline.withValues(alpha: 0.7)),
+        ],
+      ),
+    );
+  }
+
+  /// 手动检查更新：有新版弹应用内更新流程，无新版提示已是最新
+  Future<void> _checkUpdate() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final info = await UpdateService.check();
+    if (!mounted) return;
+    if (info == null) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('已是最新版本', textAlign: TextAlign.center)));
+      return;
+    }
+    await UpdateFlow.show(context, info);
+  }
+
+  /// 使用声明全文（知识产权 / 非商用 / 免责条款）
+  void _showStatement() {
+    final outline = Theme.of(context).colorScheme.outline;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('使用声明', style: TextStyle(fontSize: 17)),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                AppConstants.usageStatement,
+                style: TextStyle(fontSize: 13, height: 1.7, color: outline),
+              ),
             ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
           ),
         ],
       ),
