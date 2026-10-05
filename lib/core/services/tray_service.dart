@@ -27,7 +27,16 @@ class TrayService with TrayListener {
     try {
       await windowManager.ensureInitialized();
       trayManager.addListener(instance);
-      await trayManager.setIcon('icons/app_icon.ico');
+      // tray_manager 拼接规则：<exe 目录>\data\flutter_assets\<path>
+      // 而 pubspec 声明的是 assets/icons/，打包后实际落在 flutter_assets\assets\icons\
+      // 传错路径 LoadImage 返回 NULL 且不抛错 → 托盘图标透明/空白（静默失败）
+      const iconPath = 'assets/icons/app_icon.ico';
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final iconFile = File('$exeDir/data/flutter_assets/$iconPath');
+      if (!iconFile.existsSync()) {
+        debugPrint('[TRAY] 托盘图标缺失: ${iconFile.path}');
+      }
+      await trayManager.setIcon(iconPath);
       await trayManager.setToolTip(AppConstants.appName);
       await trayManager.setContextMenu(Menu(items: [
         MenuItem(key: 'show', label: '显示主界面'),
