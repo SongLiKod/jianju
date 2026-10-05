@@ -82,4 +82,39 @@ void main() {
       expect(info!.apkUrl, isNull);
     });
   });
+
+  group('安装失败原因中文化', () {
+    test('版本降级给出可操作说明', () {
+      final s = UpdateService.humanizeInstallError(
+        'INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected',
+      );
+      expect(s, contains('版本号'));
+      expect(s, contains('更高版本号'));
+    });
+
+    test('签名不一致提示先卸载', () {
+      final s = UpdateService.humanizeInstallError(
+        'INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match',
+      );
+      expect(s, contains('签名'));
+      expect(s, contains('卸载'));
+    });
+
+    test('存储不足 / 包损坏 / 已取消', () {
+      expect(UpdateService.humanizeInstallError('INSTALL_FAILED_INSUFFICIENT_STORAGE'),
+          contains('存储空间'));
+      expect(UpdateService.humanizeInstallError('INSTALL_FAILED_INVALID_APK'),
+          contains('损坏'));
+      expect(UpdateService.humanizeInstallError('INSTALL_FAILED_ABORTED'),
+          contains('取消'));
+    });
+
+    test('空消息与未知原因都给出可读文案', () {
+      expect(UpdateService.humanizeInstallError('  '), '安装失败，请重试');
+      expect(
+        UpdateService.humanizeInstallError('something weird'),
+        '安装失败：something weird',
+      );
+    });
+  });
 }

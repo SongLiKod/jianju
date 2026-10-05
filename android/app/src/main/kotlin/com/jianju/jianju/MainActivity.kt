@@ -40,6 +40,46 @@ class MainActivity : FlutterActivity() {
             }
         }
         configureUpdater(flutterEngine)
+        handleInstallStatus(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleInstallStatus(intent)
+    }
+
+    /**
+     * 系统安装回执（PackageInstaller 异步回调，状态经 PendingIntent 回到本 Activity）：
+     * - STATUS_PENDING_USER_ACTION：浮起系统确认框（不启动它则安装卡住无任何提示）
+     * - 其余状态：转给 Dart 弹窗展示，失败不再停在「正在安装」或只报含糊错误码
+     */
+    private fun handleInstallStatus(intent: Intent?) {
+        if (intent?.action != "$packageName.INSTALL_STATUS") return
+        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            @Suppress("DEPRECATION")
+            val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            if (confirm == null) {
+                sendInstallStatus(PackageInstaller.STATUS_FAILURE, "缺少系统确认页")
+            } else {
+                try {
+                    startActivity(confirm)
+                } catch (e: Exception) {
+                    sendInstallStatus(PackageInstaller.STATUS_FAILURE, e.message)
+                }
+            }
+            return
+        }
+        sendInstallStatus(status, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
+    }
+
+    private fun sendInstallStatus(status: Int, message: String?) {
+        runOnUiThread {
+            updaterChannel?.invokeMethod(
+                "installStatus",
+                mapOf("status" to status, "message" to (message ?: ""))
+            )
+        }
     }
 
     /** 应用内检查更新：授权查询 / 打开安装授权页 / 提交安装会话 */
