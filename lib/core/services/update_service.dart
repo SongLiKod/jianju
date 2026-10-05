@@ -194,8 +194,63 @@ class UpdateService {
       await _updater.invokeMethod<String>('installApk', path);
       return null;
     } on PlatformException catch (e) {
-      return e.code;
+      debugPrint('[UPD] 安装提交失败 code=${e.code} msg=${e.message}');
+      if (e.code == 'blocked') return 'blocked';
+      final msg = (e.message ?? '').trim();
+      return msg.isEmpty ? e.code : '$e.code：$msg';
     }
+  }
+
+  /// 系统异步安装回执监听（status 0=成功，其余=失败；message 为系统原文）
+  static void Function(int status, String message)? onInstallStatus;
+  static bool _statusChannelReady = false;
+
+  /// 注册回执监听（当前唯一使用方：更新弹窗，覆盖/清空都走这里）
+  static void listenInstallStatus(
+    void Function(int status, String message) handler,
+  ) {
+    onInstallStatus = handler;
+    if (_statusChannelReady) return;
+    _statusChannelReady = true;
+    _updater.setMethodCallHandler((call) async {
+      if (call.method != 'installStatus') return null;
+      final args = call.arguments;
+      if (args is Map) {
+        onInstallStatus?.call(
+          (args['status'] as num?)?.toInt() ?? -1,
+          '${args['message'] ?? ''}',
+        );
+      }
+      return null;
+    });
+  }
+
+  static void cancelInstallStatusListener() => onInstallStatus = null;
+
+  /// 把系统安装失败原文译成可读原因（未知原文原样返回，离线可测）
+  static String humanizeInstallError(String message) {
+    final m = message.trim();
+    if (m.isEmpty) return '安装失败，请重试';
+    if (m.contains('VERSION_DOWNGRADE')) {
+      return '安装失败：新包版本号低于当前已安装版本，'
+          '请发布更高版本号的安装包后再更新';
+    }
+    if (m.contains('UPDATE_INCOMPATIBLE') || m.contains('SIGNATURE')) {
+      return '安装失败：新包与已安装应用签名不一致，需先卸载旧版再安装';
+    }
+    if (m.contains('INSUFFICIENT_STORAGE')) {
+      return '安装失败：设备存储空间不足';
+    }
+    if (m.contains('CONFLICT')) {
+      return '安装失败：与已安装应用冲突';
+    }
+    if (m.contains('INVALID_APK') || m.contains('PARSE')) {
+      return '安装失败：安装包损坏，请重新下载';
+    }
+    if (m.contains('ABORTED')) {
+      return '安装已取消';
+    }
+    return '安装失败：$m';
   }
 
   /// 清掉上次没用上的更新包（提交后系统已把内容拷走，临时包可删）

@@ -6,7 +6,7 @@
 所有去广告逻辑在客户端本地完成：不加载开屏/信息流/详情页广告，播放时自动剔除片头片尾广告分片，只播正片。
 
 - 仓库：`SongLiKod/jianju`
-- 当前版本：**2.0.0**（pubspec `version: 2.0.0+2`，`+2` 为 Android versionCode）
+- 当前版本：**2.1.0**（pubspec `version: 2.1.0`；Android versionCode 由版本号自动推导，本版为 `2001000`）
 - 开发环境：Flutter **3.44.2** / Dart **3.12.2**
 
 ---
@@ -137,12 +137,14 @@ storeFile=jianju-keystore.jks
 ### 版本号约定
 
 ```yaml
-# pubspec.yaml
-version: 2.0.0+2   # versionName=2.0.0，versionCode=2
+# pubspec.yaml —— 只写版本号，不写 build-number
+version: 2.1.0
 ```
 
-- `versionName`（`2.0.0`）用于展示与更新比对。
-- `versionCode`（`+2`）用于 Android 安装升级：**每次发布必须递增**，否则系统会拒绝覆盖安装并报 `INSTALL_FAILED_VERSION_DOWNGRADE`。
+- `versionName` 用于界面展示与更新比对，界面上显示的就是 `2.1.0`。
+- **Android versionCode 由 versionName 自动推导**，见 [`android/app/build.gradle.kts`](android/app/build.gradle.kts)：每段占 3 位 → `2.1.0` = `2_001_000`。
+- 版本号递增（`2.1.0` → `2.1.1`）则 versionCode 必然递增，无需手工维护 `+N`；**每次发版只改 `pubspec.yaml` 的 `version`**。
+- versionCode 不递增时系统会拒绝覆盖安装并报 `INSTALL_FAILED_VERSION_DOWNGRADE`（应用内更新会提示「新包版本号低于当前已安装版本」）。
 
 ### CI / 发布（GitHub Actions）
 
@@ -273,7 +275,7 @@ flutter test test/probe_bhvod7_test.dart
 
 - **不要对源码执行 `dart format`**（仓库有自己的格式约定，全量格式化会产生巨大无意义 diff）。
 - 源码文件使用 **UTF-8 无 BOM**；含中文的 `.ps1` 脚本使用 **UTF-8 带 BOM**。
-- 修改发布相关逻辑后，记得同步 `pubspec.yaml` 的 `version`（含 `+N`）。
+- 修改发布相关逻辑后，记得同步 `pubspec.yaml` 的 `version`（versionCode 随之自动变化，无需写 `+N`）。
 - 本地缺少 Android release keystore 时只能出 debug 签名包，验证更新/覆盖安装流程前先确认签名一致。
 
 ---
@@ -281,7 +283,7 @@ flutter test test/probe_bhvod7_test.dart
 ## 十一、常见问题
 
 **1. 安装提示 `INSTALL_FAILED_VERSION_DOWNGRADE`**
-装到设备的 versionCode 更高。给 `pubspec.yaml` 的 `+N` 递增后重装。
+目标设备上已装的 versionCode 更高。确认 `pubspec.yaml` 的 `version` 比已装版本大（versionCode 随之变大），或该包是旧代码构建的（未含自动推导逻辑）→ 用当前代码重新构建。
 
 **2. 安装提示 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（签名不匹配）**
 本机包与目标包 keystore 不同，只能卸载重装（本地历史/收藏会丢）。

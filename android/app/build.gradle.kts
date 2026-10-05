@@ -28,7 +28,13 @@ android {
         // 需求：Android 8.0 及以上
         minSdk = 26
         targetSdk = 35
-        versionCode = flutter.versionCode
+        // versionCode 由 versionName 推导，每段占 3 位：2.1.0 → 2_001_000。
+        // 版本号递增则 versionCode 必然递增，pubspec 无需写 build-number。
+        versionCode = run {
+            val seg = (flutter.versionName ?: "0.0.0").split(".")
+            fun num(i: Int) = seg.getOrNull(i)?.filter { it.isDigit() }?.toIntOrNull() ?: 0
+            num(0) * 1_000_000 + num(1) * 1_000 + num(2)
+        }
         versionName = flutter.versionName
     }
 

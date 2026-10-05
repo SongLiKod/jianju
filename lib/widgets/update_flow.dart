@@ -50,14 +50,30 @@ class _UpdateFlowState extends State<UpdateFlow> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    UpdateService.listenInstallStatus(_onInstallStatus);
     _loadCurrent();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    UpdateService.cancelInstallStatusListener();
     _token?.cancel();
     super.dispose();
+  }
+
+  /// 系统安装回执：成功即收起弹窗（系统随后重启本应用）；失败展示可读原因
+  void _onInstallStatus(int status, String message) {
+    if (!mounted) return;
+    if (status == 0) {
+      debugPrint('[UPD] 安装成功');
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() {
+      _phase = _Phase.error;
+      _error = UpdateService.humanizeInstallError(message);
+    });
   }
 
   /// 从系统「允许来自此来源」页回来：已授权就自动续上安装
@@ -122,13 +138,13 @@ class _UpdateFlowState extends State<UpdateFlow> with WidgetsBindingObserver {
     if (file == null || !mounted) return;
     setState(() => _phase = _Phase.installing);
     final code = await UpdateService.installApk(file.path);
-    if (!mounted || code == null) return; // 系统确认框已浮起
+    if (!mounted || code == null) return; // 已提交，等系统回执（_onInstallStatus）
     if (code == 'blocked') {
       setState(() => _phase = _Phase.blocked);
     } else {
       setState(() {
         _phase = _Phase.error;
-        _error = '安装失败（$code）';
+        _error = UpdateService.humanizeInstallError(code);
       });
     }
   }
