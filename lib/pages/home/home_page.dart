@@ -9,6 +9,7 @@ import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/responsive.dart';
+import '../../widgets/brand_icon.dart';
 import '../../widgets/drama_card.dart';
 import '../../widgets/poster_card.dart';
 import '../../widgets/search_trigger.dart';
@@ -233,7 +234,7 @@ class _HomePageState extends State<HomePage>
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Image.asset('assets/icons/app_icon.png', width: 22, height: 22),
+            const BrandIcon(size: 22),
             const SizedBox(width: 6),
             const Text('简剧'),
           ],

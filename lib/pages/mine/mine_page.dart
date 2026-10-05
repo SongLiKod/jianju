@@ -7,6 +7,7 @@ import '../../core/services/history_service.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/responsive.dart';
+import '../../widgets/brand_icon.dart';
 import '../favorites/favorites_page.dart';
 import '../history/history_page.dart';
 import '../settings/settings_page.dart';
@@ -35,11 +36,7 @@ class MinePage extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
               child: Row(
                 children: [
-                  Image.asset(
-                    'assets/icons/app_icon.png',
-                    width: 56,
-                    height: 56,
-                  ),
+                  const BrandIcon(size: 56),
                   const SizedBox(width: 14),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/constants/app_constants.dart';
 import '../core/theme/responsive.dart';
+import 'brand_icon.dart';
 import 'floating_nav_bar.dart';
 
 /// 桌面端左侧常驻导航栏（宽窗口专用，替代移动端底部悬浮导航条）
@@ -46,11 +47,7 @@ class AppSidebar extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 18),
             child: Row(
               children: [
-                Image.asset(
-                  'assets/icons/app_icon.png',
-                  width: 34,
-                  height: 34,
-                ),
+                BrandIcon(size: 34, color: primaryColor),
                 const SizedBox(width: 11),
                 Expanded(
                   child: Column(
