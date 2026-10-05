@@ -250,6 +250,12 @@ class UpdateService {
     if (m.contains('ABORTED')) {
       return '安装已取消';
     }
+    if (m.contains('createSession') ||
+        m.contains('PackageInstaller') ||
+        m.contains('NullPointerException')) {
+      // 拿不到系统安装服务（个别 ROM 返回 null），换包安装方式也救不回来
+      return '安装失败：当前系统无法唤起安装器，请改用下载的 APK 手动安装';
+    }
     return '安装失败：$m';
   }
 

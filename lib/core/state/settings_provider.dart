@@ -13,6 +13,7 @@ class SettingsProvider extends ChangeNotifier {
   int _preloadLeadSec = AppConstants.defaultPreloadLeadSec;
   int _bufferSecs = AppConstants.defaultBufferSecs;
   bool _slimProgress = AppConstants.defaultSlimProgress;
+  int _searchLimit = AppConstants.defaultSearchLimit;
 
   double get defaultSpeed => _defaultSpeed;
 
@@ -35,6 +36,9 @@ class SettingsProvider extends ChangeNotifier {
   /// 底部细进度条常显
   bool get slimProgress => _slimProgress;
 
+  /// 跨站搜索合并后展示的条数
+  int get searchLimit => _searchLimit;
+
   bool get hasApi52Key => _apiKey52.isNotEmpty;
 
   void load() {
@@ -46,6 +50,7 @@ class SettingsProvider extends ChangeNotifier {
     _preloadLeadSec = SettingsService.preloadLeadSec;
     _bufferSecs = SettingsService.bufferSecs;
     _slimProgress = SettingsService.slimProgress;
+    _searchLimit = SettingsService.searchLimit;
   }
 
   // ==================== 播放体验 ====================
@@ -76,6 +81,14 @@ class SettingsProvider extends ChangeNotifier {
     _slimProgress = v;
     notifyListeners();
     await SettingsService.setSlimProgress(v);
+  }
+
+  /// 修改跨站搜索结果条数
+  Future<void> setSearchLimit(int v) async {
+    debugPrint('[SET] searchLimit -> $v');
+    _searchLimit = v;
+    notifyListeners();
+    await SettingsService.setSearchLimit(v);
   }
 
   /// 修改全局默认倍速（播放器打开视频时自动加载）

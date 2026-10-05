@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../../core/constants/app_constants.dart';
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/search_history_service.dart';
 import '../../core/services/source_label.dart';
+import '../../core/state/settings_provider.dart';
 import '../../core/theme/responsive.dart';
 import '../../widgets/drama_card.dart';
 import '../../widgets/poster_card.dart';
@@ -12,10 +15,12 @@ import '../detail/detail_page.dart';
 
 /// 搜索模块
 /// 1. 顶部搜索框支持关键词搜索短剧
-/// 2. 搜索结果自动过滤广告条目（ApiService 内完成）
-/// 3. 结果样式与首页统一，点击进入详情
-/// 4. 搜索历史：点词重搜、单条删除、一键清空
-/// 5. 宽窗口下结果切换为海报网格，搜索框限宽左对齐
+/// 2. 跨站聚合搜索：当前源 + 官方源 + 全部整站站点并发查询、去重合并
+/// 3. 展示条数可在 设置 → 搜索 → 搜索结果条数 里配置（默认 10 条）
+/// 4. 搜索结果自动过滤广告条目（ApiService 内完成）
+/// 5. 结果样式与首页统一，点击进入详情
+/// 6. 搜索历史：点词重搜、单条删除、一键清空
+/// 7. 宽窗口下结果切换为海报网格，搜索框限宽左对齐
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -32,6 +37,13 @@ class _SearchPageState extends State<SearchPage>
   bool _error = false;
   String _keyword = '';
 
+  /// 跨站搜索进度：已完成站点数 / 总站点数
+  int _done = 0;
+  int _total = 0;
+
+  /// 本次搜索采用的结果条数上限（设置 → 搜索）
+  int _limit = AppConstants.defaultSearchLimit;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -47,18 +59,37 @@ class _SearchPageState extends State<SearchPage>
     FocusScope.of(context).unfocus();
     await SearchHistoryService.add(kw);
     if (!mounted) return;
+    final limit = context.read<SettingsProvider>().searchLimit;
     setState(() {
       _keyword = kw;
       _searching = true;
       _error = false;
       _results.clear();
+      _done = 0;
+      _total = 0;
+      _limit = limit;
     });
     try {
-      // 官方网页搜索仅返回首屏 10 条，无分页
-      final items = await ApiService.search(keyword: _keyword);
+      // 跨站并发搜索：站点陆续返回，结果边搜边出
+      final items = await ApiService.searchAcross(
+        keyword: _keyword,
+        limit: limit,
+        onUpdate: (merged, done, total) {
+          if (!mounted) return;
+          setState(() {
+            _results
+              ..clear()
+              ..addAll(merged);
+            _done = done;
+            _total = total;
+          });
+        },
+      );
       if (!mounted) return;
       setState(() {
-        _results.addAll(items);
+        _results
+          ..clear()
+          ..addAll(items);
         _searching = false;
       });
     } catch (_) {
@@ -129,8 +160,7 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _buildBody() {
-    if (_searching) return const LoadingView(text: '搜索中...');
-    if (_error) {
+    if (_error && _results.isEmpty) {
       return ErrorRetryView(
         message: '搜索失败，请稍后重试',
         onRetry: () => _submit(_keyword),
@@ -138,7 +168,7 @@ class _SearchPageState extends State<SearchPage>
     }
     if (_keyword.isEmpty) return _buildHistory();
     if (_results.isEmpty) {
-      return const EmptyView(message: '没有找到相关短剧');
+      return LoadingView(text: _searching ? '搜索中...' : '没有找到相关短剧');
     }
     if (AppLayout.isWide(context)) return _buildWideResults(context);
     return ListView.builder(
@@ -148,15 +178,7 @@ class _SearchPageState extends State<SearchPage>
       ),
       itemCount: _results.length + 1,
       itemBuilder: (context, index) {
-        if (index >= _results.length) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: 18),
-            child: Center(
-              child: Text('仅展示前 10 条结果',
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
-            ),
-          );
-        }
+        if (index >= _results.length) return _footer();
         final drama = _results[index];
         return DramaCard(
           drama: drama,
@@ -171,10 +193,40 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
+  /// 结果列表底部：搜索进度 / 展示条数说明
+  Widget _footer() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      child: Center(
+        child: Text(
+          _footerText(),
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+      ),
+    );
+  }
+
+  String _footerText() {
+    if (_searching && _total > 0) {
+      return '正在跨站搜索 $_done/$_total 个站点 · 已返回 ${_results.length} 条';
+    }
+    if (_searching) return '正在跨站搜索…';
+    if (_results.length >= _limit) {
+      return '已搜索 $_total 个站点 · 仅展示前 $_limit 条（可在设置中调整）';
+    }
+    return '已搜索 $_total 个站点 · 共 ${_results.length} 条';
+  }
+
   /// 宽窗口：搜索结果以海报网格展示
   Widget _buildWideResults(BuildContext context) {
     return Column(
       children: [
+        if (_searching && _total > 0)
+          LinearProgressIndicator(
+            value: _done / (_total == 0 ? 1 : _total),
+            minHeight: 2,
+            backgroundColor: Colors.transparent,
+          ),
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -214,7 +266,7 @@ class _SearchPageState extends State<SearchPage>
         Padding(
           padding: const EdgeInsets.only(bottom: 24, top: 4),
           child: Text(
-            '仅展示前 10 条结果',
+            _footerText(),
             style: TextStyle(
                 fontSize: 12, color: Theme.of(context).colorScheme.outline),
           ),
