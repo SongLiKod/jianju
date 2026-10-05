@@ -258,40 +258,51 @@ class PrebufferService {
         throw Exception('清单含加密分片，暂不支持');
       }
       // 按 #EXT-X-DISCONTINUITY 分块；目录（origin+路径）与首块不同的
-      // 非首块 = 中插贴片广告（如 khKm9Z55/10110kb），合并时剔除
-      final chunks = <List<String>>[];
-      var current = <String>[];
+      // 非首块 = 中插贴片广告（如 khKm9Z55/10110kb），合并时剔除；
+      // 同目录块再按码率判（与起播改写同一判据）
+      final chunks = <List<_Seg>>[];
+      var current = <_Seg>[];
+      var pendDur = 0.0;
       for (final raw in body.split('\n')) {
         final l = raw.trim();
         if (l.isEmpty) continue;
         if (l.startsWith('#')) {
-          if (l.toUpperCase().startsWith('#EXT-X-DISCONTINUITY') &&
+          if (l.toUpperCase().startsWith('#EXTINF')) {
+            pendDur = _extinfDur(l);
+          } else if (l.toUpperCase().startsWith('#EXT-X-DISCONTINUITY') &&
               current.isNotEmpty) {
             chunks.add(current);
-            current = <String>[];
+            current = <_Seg>[];
           }
           continue;
         }
-        current.add(l);
+        current.add(_Seg(Uri.parse(listUrl).resolve(l).toString(), pendDur));
+        pendDur = 0;
       }
       if (current.isNotEmpty) chunks.add(current);
       if (chunks.isEmpty) throw Exception('清单无分片');
-      String dirOf(String seg) {
-        final u = Uri.parse(listUrl).resolve(seg);
+      String dirOf(String abs) {
+        final u = Uri.parse(abs);
         final p = u.path;
         return '${u.origin}${p.substring(0, p.lastIndexOf('/') + 1)}';
       }
 
-      final firstDir = dirOf(chunks.first.first);
+      final firstDir = dirOf(chunks.first.first.url);
       final segs = <String>[];
       var removed = 0;
       for (var ci = 0; ci < chunks.length; ci++) {
         final chunk = chunks[ci];
-        if (ci > 0 && dirOf(chunk.first) != firstDir) {
-          removed += chunk.length;
-          continue;
+        if (ci > 0) {
+          if (dirOf(chunk.first.url) != firstDir) {
+            removed += chunk.length;
+            continue;
+          }
+          if (await _isAdBlock(client, hdrs, chunks.first, chunk)) {
+            removed += chunk.length;
+            continue;
+          }
         }
-        segs.addAll(chunk);
+        segs.addAll(chunk.map((s) => s.url));
       }
       if (removed > 0) {
         debugPrint('[PBF] 第$index集合并时剔除插播广告 $removed 片');
@@ -350,14 +361,19 @@ class PrebufferService {
     return null;
   }
 
-  /// 起播用清单改写：剔除中插广告段，生成本地 .m3u8（分片为绝对 URL）。
+  /// 起播用清单改写：剔除中插/片尾广告段，生成本地 .m3u8（分片为绝对 URL）。
   ///
-  /// 中插广告段（异目录、10Mbps/1080p）会让 mpv 播放中/seek 时把流重启回
-  /// 00:00——实测"跳回开始播放"死循环全部发生在进入广告段的一瞬（自然
-  /// 播放、恢复 seek、进度 seek 无一幸免），而分片本身用任意 UA 都能完整
-  /// 下载，属 mpv(ffmpeg HLS) 对该 CDN 广告段的处理缺陷，无法用 mpv 参数
-  /// 绕开。让 mpv 只读去广告清单即可根治：无广告、非 HLS、改写失败一律
-  /// 返回 null（原样起播，行为不变）。
+  /// 广告段（异目录 10Mbps/1080p，或 bhvod 类站点的**同目录**片尾贴片）会让
+  /// mpv 播放中/seek 时把流重启回 00:00——实测"跳回开始播放 + 不跳下一集 +
+  /// 反复爆音"死循环全部发生在进入广告段的一瞬（自然播放、恢复 seek、进度
+  /// seek 无一幸免），而分片本身用任意 UA 都能完整下载，属 mpv(ffmpeg HLS)
+  /// 对该 CDN 广告段的处理缺陷，无法用 mpv 参数绕开。判据两层：
+  ///  1. 目录：非首块的 origin+路径与首块不同 → 广告；
+  ///  2. 码率：同目录块用 `Range: bytes=0-0` 探真实分片大小，按 EXTINF 时长
+  ///     算码率中位数，与首块（正片）偏离 ≥1.8 倍 → 广告（本剧 3238 vs
+  ///     1138 kbps）。探测失败一律保留（原样起播，不改变既有行为）。
+  /// 让 mpv 只读去广告清单即可根治：无广告、非 HLS、改写失败一律返回 null
+  /// （原样起播，行为不变）。
   static Future<String?> rewritePlaylist(String url) async {
     try {
       if (!url.toLowerCase().contains('.m3u8')) return null;
@@ -441,13 +457,28 @@ class PrebufferService {
         }
 
         final firstDir = dirOf(chunks.first.first.url);
+        final baseSegs = chunks.first
+            .map((e) => _Seg(e.url, _extinfDur(e.extinf)))
+            .toList();
         final kept = <List<_PlEntry>>[];
         var removed = 0;
+        var byRate = 0;
         for (var ci = 0; ci < chunks.length; ci++) {
           final chunk = chunks[ci];
-          if (ci > 0 && dirOf(chunk.first.url) != firstDir) {
-            removed += chunk.length;
-            continue;
+          if (ci > 0) {
+            if (dirOf(chunk.first.url) != firstDir) {
+              removed += chunk.length;
+              continue;
+            }
+            // 同目录非首块（bhvod 类站点正片与片尾贴片同目录，光看目录
+            // 判不出）：Range 探测真实分片大小算码率，与正片偏离即广告
+            final segs =
+                chunk.map((e) => _Seg(e.url, _extinfDur(e.extinf))).toList();
+            if (await _isAdBlock(client, hdrs, baseSegs, segs)) {
+              removed += chunk.length;
+              byRate++;
+              continue;
+            }
           }
           kept.add(chunk);
         }
@@ -481,7 +512,8 @@ class PrebufferService {
             '${plDir.path}/h${url.hashCode.toRadixString(16)}.m3u8');
         await file.writeAsString(out.toString(), flush: true);
         debugPrint('[PBF] 起播清单已改写：剔除广告 $removed 片'
-            '（保留 ${entries.length - removed} 片）');
+            '（保留 ${entries.length - removed} 片'
+            '${byRate > 0 ? '，码率判据 $byRate 块' : ''}）');
         return file.path;
       } finally {
         client.close(force: true);
@@ -510,6 +542,102 @@ class PrebufferService {
       }
     });
   }
+
+  /// EXTINF 时长（秒）；解析不到返回 0
+  static double _extinfDur(String extinf) {
+    final m = RegExp(r'#EXTINF:\s*([\d.]+)').firstMatch(extinf);
+    return m == null ? 0 : (double.tryParse(m.group(1)!) ?? 0);
+  }
+
+  /// Range 探测单片总大小（字节）。HEAD 在该 CDN 回 502，只能用 `bytes=0-0`
+  /// 取 `Content-Range` 末尾的 total。失败返回 null（调用方按"保留"处理）。
+  static Future<int?> _probeSize(
+      String url, HttpClient client, Map<String, String> hdrs) async {
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      for (final e in hdrs.entries) {
+        req.headers.set(e.key, e.value);
+      }
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final sc = resp.statusCode;
+      int? total;
+      if (sc == HttpStatus.partialContent) {
+        final cr = resp.headers.value(HttpHeaders.contentRangeHeader);
+        final m =
+            cr == null ? null : RegExp(r'/(\d+)\s*$').firstMatch(cr.trim());
+        if (m != null) total = int.parse(m.group(1)!);
+      } else if (sc == HttpStatus.ok && resp.contentLength > 0) {
+        total = resp.contentLength; // CDN 忽略 Range 时退化为 content-length
+      }
+      await resp.drain<void>();
+      return total;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 块码率中位数（字节/秒）：最多均匀采 8 片并行探测；任一片取不到大小
+  /// 或时长缺失即返回 null（不猜、不降级，交给调用方保留原块）
+  static Future<double?> _medianRate(
+      List<_Seg> segs, HttpClient client, Map<String, String> hdrs) async {
+    if (segs.isEmpty) return null;
+    List<_Seg> pick;
+    if (segs.length <= 8) {
+      pick = segs;
+    } else {
+      pick = <_Seg>[];
+      for (var i = 0; i < 8; i++) {
+        pick.add(segs[(i * (segs.length - 1) / 7).round()]);
+      }
+    }
+    final rates = await Future.wait(pick.map((s) async {
+      if (s.dur <= 0) return null;
+      final total = await _probeSize(s.url, client, hdrs);
+      if (total == null || total <= 0) return null;
+      return total / s.dur;
+    }));
+    if (rates.any((r) => r == null) || rates.isEmpty) return null;
+    final ok = rates.whereType<double>().toList()..sort();
+    return ok[ok.length ~/ 2];
+  }
+
+  /// 同目录广告块判定：码率与首块（正片）中位数偏离 ≥1.8 倍（任一方向）。
+  ///
+  /// 只在清单含 discontinuity 且非首块与首块同目录时才会调用（常规清单零
+  /// 额外请求）；探测失败返回 false（原样保留），且不进缓存以便下次重试。
+  static Future<bool> _isAdBlock(HttpClient client, Map<String, String> hdrs,
+      List<_Seg> base, List<_Seg> cand) async {
+    if (base.isEmpty || cand.isEmpty) return false;
+    final key = cand.first.url;
+    final hit = _adVerdict[key];
+    if (hit != null) return hit;
+    try {
+      final rates = await Future.wait([
+        _medianRate(base, client, hdrs),
+        _medianRate(cand, client, hdrs),
+      ]).timeout(const Duration(seconds: 5), onTimeout: () => const [null, null]);
+      final b = rates[0];
+      final c = rates[1];
+      if (b == null || c == null) return false;
+      final verdict = isAdRate(b, c);
+      if (_adVerdict.length > 512) _adVerdict.clear();
+      _adVerdict[key] = verdict;
+      return verdict;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 码率判据（暴露给测试）：偏离基准 ≥1.8 倍即判广告。
+  /// 正片（同一变体同一档编码）块间码率基本一致，广告多为另一次编码
+  /// （本剧 3238 vs 1138 kbps，比值 2.85），1.8 阈值两侧都有充足余量。
+  @visibleForTesting
+  static bool isAdRate(double baseRate, double candRate) =>
+      candRate > baseRate * 1.8 || candRate < baseRate / 1.8;
+
+  /// 同目录广告块判定结果缓存（仅缓存已判定的块，失败不缓存）
+  static final Map<String, bool> _adVerdict = <String, bool>{};
 
   static Future<String> _fetchText(String url, HttpClient client,
       [Map<String, String>? headers]) async {
@@ -671,6 +799,14 @@ class PrebufferService {
       }
     } catch (_) {}
   }
+}
+
+/// 分片采样单元：绝对地址 + EXTINF 时长（秒，未知为 0）
+class _Seg {
+  final String url;
+  final double dur;
+
+  const _Seg(this.url, this.dur);
 }
 
 /// 清单改写的解析条目：前导标签 + EXTINF + 后置标签 + 绝对分片 URL
