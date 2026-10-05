@@ -37,7 +37,10 @@ class PlayLine {
   bool get isCustom => id.startsWith('custom-');
 }
 
-/// 内置线路注册表（20 条，均以《宴律》第 40 集端到端验证可解析 m3u8）
+/// 内置线路注册表（30 条，均端到端验证可解析出 m3u8 直链）
+///
+/// 前 20 条为短剧站（以《宴律》第 40 集验证）；后 10 条为通用影视资源站
+/// （不限短剧，以《二嫁有喜》《庆余年》《凡人修仙传》等验证）。
 const List<PlayLine> kPlayLines = [
   // ---- 提供器 API 模式 ----
   PlayLine(id: 'bsvod.com', name: 'bsvod.com', base: 'https://bsvod.com', mode: PlayLineMode.api),
@@ -51,6 +54,17 @@ const List<PlayLine> kPlayLines = [
   PlayLine(id: 'gmmov.com', name: 'gmmov.com', base: 'https://gmmov.com', mode: PlayLineMode.api),
   PlayLine(id: 'iuzvod.com', name: 'iuzvod.com', base: 'https://iuzvod.com', mode: PlayLineMode.api),
   PlayLine(id: 'zmvod.com', name: 'zmvod.com', base: 'https://zmvod.com', mode: PlayLineMode.api),
+  // ---- 提供器 API 模式（通用影视资源站） ----
+  PlayLine(id: 'hongniuzy2.com', name: 'hongniuzy2.com', base: 'https://hongniuzy2.com', mode: PlayLineMode.api),
+  PlayLine(id: 'api.guangsuapi.com', name: 'api.guangsuapi.com', base: 'https://api.guangsuapi.com', mode: PlayLineMode.api),
+  PlayLine(id: 'api.wujinapi.com', name: 'api.wujinapi.com', base: 'https://api.wujinapi.com', mode: PlayLineMode.api),
+  PlayLine(id: 'www.iqiyizyapi.com', name: 'www.iqiyizyapi.com', base: 'https://www.iqiyizyapi.com', mode: PlayLineMode.api),
+  PlayLine(id: 'cj.lziapi.com', name: 'cj.lziapi.com', base: 'https://cj.lziapi.com', mode: PlayLineMode.api),
+  PlayLine(id: 'lovedan.net', name: 'lovedan.net', base: 'https://lovedan.net', mode: PlayLineMode.api),
+  PlayLine(id: 'api.ffzyapi.com', name: 'api.ffzyapi.com', base: 'https://api.ffzyapi.com', mode: PlayLineMode.api),
+  PlayLine(id: 'heimao.one', name: 'heimao.one', base: 'https://heimao.one', mode: PlayLineMode.api),
+  PlayLine(id: 'mxvod.top', name: 'mxvod.top', base: 'https://mxvod.top', mode: PlayLineMode.api),
+  PlayLine(id: '360zy.com', name: '360zy.com', base: 'https://360zy.com', mode: PlayLineMode.api),
   // ---- 网页链路模式 ----
   PlayLine(id: 'thjzsj.cn', name: 'thjzsj.cn', base: 'https://thjzsj.cn', mode: PlayLineMode.html),
   PlayLine(id: 'bcvod.top', name: 'bcvod.top', base: 'https://bcvod.top', mode: PlayLineMode.html),
@@ -145,7 +159,7 @@ class PlayLineResolver {
   static final List<PlayLine> _custom = [];
   static bool _customLoaded = false;
 
-  /// 全部线路：内置 20 条 + 用户自定义站点
+  /// 全部线路：内置 30 条 + 用户自定义站点
   static List<PlayLine> get allLines {
     _ensureCustomLoaded();
     return [...kPlayLines, ..._custom];
