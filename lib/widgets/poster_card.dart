@@ -11,7 +11,15 @@ class PosterCard extends StatefulWidget {
   final Drama drama;
   final VoidCallback onTap;
 
-  const PosterCard({super.key, required this.drama, required this.onTap});
+  /// 资源站点名（搜索结果标明来源站点），null 不显示
+  final String? sourceLabel;
+
+  const PosterCard({
+    super.key,
+    required this.drama,
+    required this.onTap,
+    this.sourceLabel,
+  });
 
   @override
   State<PosterCard> createState() => _PosterCardState();
@@ -137,6 +145,23 @@ class _PosterCardState extends State<PosterCard> {
               ),
               const SizedBox(height: 3),
               _MetaRow(drama: drama, secondary: secondary, primary: primary),
+              if (widget.sourceLabel != null) ...[
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Icon(Icons.dns_outlined, size: 11, color: primary),
+                    const SizedBox(width: 3),
+                    Flexible(
+                      child: Text(
+                        '来源 ${widget.sourceLabel}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10.5, color: primary),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),

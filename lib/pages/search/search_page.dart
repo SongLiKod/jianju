@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/search_history_service.dart';
+import '../../core/services/source_label.dart';
 import '../../core/theme/responsive.dart';
 import '../../widgets/drama_card.dart';
 import '../../widgets/poster_card.dart';
@@ -159,6 +160,7 @@ class _SearchPageState extends State<SearchPage>
         final drama = _results[index];
         return DramaCard(
           drama: drama,
+          sourceLabel: SourceLabel.of(drama.bookId),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => DetailPage(bookId: drama.bookId),
@@ -197,6 +199,7 @@ class _SearchPageState extends State<SearchPage>
                   final drama = _results[index];
                   return PosterCard(
                     drama: drama,
+                    sourceLabel: SourceLabel.of(drama.bookId),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => DetailPage(bookId: drama.bookId),

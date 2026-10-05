@@ -4,11 +4,19 @@ import '../core/models/drama.dart';
 import 'cover_image.dart';
 
 /// 短剧卡片：展示封面、标题、简介、集数、热度（首页/搜索结果统一样式）
+///
+/// [sourceLabel] 非空时在标题上方标注资源站点（搜索结果标明来源站点）
 class DramaCard extends StatelessWidget {
   final Drama drama;
   final VoidCallback onTap;
+  final String? sourceLabel;
 
-  const DramaCard({super.key, required this.drama, required this.onTap});
+  const DramaCard({
+    super.key,
+    required this.drama,
+    required this.onTap,
+    this.sourceLabel,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -38,6 +46,26 @@ class DramaCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (sourceLabel != null) ...[
+                        Row(
+                          children: [
+                            Icon(Icons.dns_outlined,
+                                size: 13, color: theme.colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                '来源 $sourceLabel',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: theme.colorScheme.primary),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                      ],
                       Text(
                         drama.title,
                         maxLines: 1,
