@@ -12,6 +12,8 @@ import '../../core/services/token_service.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/responsive.dart';
+import '../../widgets/clickable.dart';
 
 /// 设置页面（所有用户可修改配置项统一收纳于此，全局默认值以本页为准）
 ///
@@ -126,7 +128,7 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: EdgeInsets.only(
           top: 8,
-          bottom: MediaQuery.paddingOf(context).bottom + 96,
+          bottom: AppLayout.scrollBottom(context),
         ),
         children: [
           // ==================== 1. 主题设置区域 ====================
@@ -522,26 +524,31 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _sectionTitle(String text) {
     final outline = Theme.of(context).colorScheme.outline;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
-      child: Text(text.toUpperCase(),
-          style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1,
-              color: outline)),
+    // 桌面端限宽居中，标题与卡片组对齐同一栏
+    return CenteredContent(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+        child: Text(text.toUpperCase(),
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1,
+                color: outline)),
+      ),
     );
   }
 
   Widget _groupContainer(bool isDark,
       {List<Widget> children = const [], Widget? child}) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
+    return CenteredContent(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: child ?? Column(children: children),
       ),
-      child: child ?? Column(children: children),
     );
   }
 
@@ -576,7 +583,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _colorDot(Color color, {required bool selected, required VoidCallback onTap}) {
-    return GestureDetector(
+    return Clickable(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -608,6 +615,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<double?> _pickDefaultSpeed(double current, Color seed) {
     return showModalBottomSheet<double>(
       context: context,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -682,6 +690,7 @@ class _SettingsPageState extends State<SettingsPage> {
       {Future<int?> Function()? onCustom}) {
     return showModalBottomSheet<int>(
       context: context,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),

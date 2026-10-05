@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动图标背景：苹果蓝系渐变（#3EA8FF -> #0047D6），与 generate_icons.ps1 保持一致 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:startColor="#3EA8FF"
+        android:endColor="#0047D6"
+        android:angle="315"/>
+</shape>

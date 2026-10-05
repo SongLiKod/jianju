@@ -6,7 +6,9 @@ import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/responsive.dart';
 import '../../widgets/cover_image.dart';
+import '../../widgets/search_trigger.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
 import '../search/search_page.dart';
@@ -147,30 +149,37 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
     final seed =
         AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
 
+    final wide = AppLayout.isWide(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('排行榜'),
         actions: [
-          IconButton(
-            tooltip: '搜索',
-            icon: const Icon(Icons.search_rounded),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SearchPage()),
+          if (wide)
+            const SearchTrigger()
+          else
+            IconButton(
+              tooltip: '搜索',
+              icon: const Icon(Icons.search_rounded),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SearchPage()),
+              ),
             ),
-          ),
         ],
       ),
-      body: Column(
-        children: [
-          _SlugBar(
-            slug: _slug,
-            labels: _labels,
-            seed: seed,
-            onChanged: _switchSlug,
-          ),
-          if (_updatedText.isNotEmpty) _UpdateBanner(text: _updatedText),
-          Expanded(child: _buildList(context)),
-        ],
+      // 桌面端内容限宽居中，避免榜单卡片被拉满整屏
+      body: CenteredContent(
+        child: Column(
+          children: [
+            _SlugBar(
+              slug: _slug,
+              labels: _labels,
+              seed: seed,
+              onChanged: _switchSlug,
+            ),
+            if (_updatedText.isNotEmpty) _UpdateBanner(text: _updatedText),
+            Expanded(child: _buildList(context)),
+          ],
+        ),
       ),
     );
   }
@@ -187,7 +196,7 @@ class _RankPageState extends State<RankPage> with AutomaticKeepAliveClientMixin 
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.only(
           top: 4,
-          bottom: MediaQuery.paddingOf(context).bottom + 96,
+          bottom: AppLayout.scrollBottom(context),
         ),
         itemCount: _list.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {

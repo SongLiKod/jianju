@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/search_history_service.dart';
+import '../../core/theme/responsive.dart';
 import '../../widgets/drama_card.dart';
+import '../../widgets/poster_card.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
 
@@ -12,6 +14,7 @@ import '../detail/detail_page.dart';
 /// 2. 搜索结果自动过滤广告条目（ApiService 内完成）
 /// 3. 结果样式与首页统一，点击进入详情
 /// 4. 搜索历史：点词重搜、单条删除、一键清空
+/// 5. 宽窗口下结果切换为海报网格，搜索框限宽左对齐
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -84,7 +87,7 @@ class _SearchPageState extends State<SearchPage>
 
   Widget _buildSearchBar(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return TextField(
+    final field = TextField(
       controller: _controller,
       autofocus: true,
       textInputAction: TextInputAction.search,
@@ -116,6 +119,12 @@ class _SearchPageState extends State<SearchPage>
       ),
       onChanged: (_) => setState(() {}),
     );
+    // 宽窗口下搜索框限宽，避免占满整条顶栏
+    if (!AppLayout.isWide(context)) return field;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 520),
+      child: field,
+    );
   }
 
   Widget _buildBody() {
@@ -130,10 +139,11 @@ class _SearchPageState extends State<SearchPage>
     if (_results.isEmpty) {
       return const EmptyView(message: '没有找到相关短剧');
     }
+    if (AppLayout.isWide(context)) return _buildWideResults(context);
     return ListView.builder(
       padding: EdgeInsets.only(
         top: 6,
-        bottom: MediaQuery.paddingOf(context).bottom + 96,
+        bottom: AppLayout.scrollBottom(context),
       ),
       itemCount: _results.length + 1,
       itemBuilder: (context, index) {
@@ -159,6 +169,57 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
+  /// 宽窗口：搜索结果以海报网格展示
+  Widget _buildWideResults(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = AppLayout.columnsFor(
+                constraints.maxWidth,
+                targetWidth: 176,
+                min: 3,
+                max: 8,
+                gutter: AppLayout.wideGutter,
+              );
+              return GridView.builder(
+                padding: const EdgeInsets.fromLTRB(
+                    AppLayout.wideGutter, 8, AppLayout.wideGutter, 0),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: 22,
+                  crossAxisSpacing: 16,
+                  childAspectRatio: 0.64,
+                ),
+                itemCount: _results.length,
+                itemBuilder: (context, index) {
+                  final drama = _results[index];
+                  return PosterCard(
+                    drama: drama,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => DetailPage(bookId: drama.bookId),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 24, top: 4),
+          child: Text(
+            '仅展示前 10 条结果',
+            style: TextStyle(
+                fontSize: 12, color: Theme.of(context).colorScheme.outline),
+          ),
+        ),
+      ],
+    );
+  }
+
   // ==================== 搜索历史 ====================
 
   Widget _buildHistory() {
@@ -172,7 +233,7 @@ class _SearchPageState extends State<SearchPage>
         top: 10,
         left: 16,
         right: 16,
-        bottom: MediaQuery.paddingOf(context).bottom + 96,
+        bottom: AppLayout.scrollBottom(context),
       ),
       children: [
         Row(

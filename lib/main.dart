@@ -1,10 +1,6 @@
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'core/services/device_service.dart';
@@ -12,6 +8,8 @@ import 'core/services/favorite_service.dart';
 import 'core/services/history_service.dart';
 import 'core/services/search_history_service.dart';
 import 'core/services/storage_service.dart';
+import 'core/services/tray_service.dart';
+import 'core/services/window_service.dart';
 import 'core/state/settings_provider.dart';
 import 'core/state/theme_provider.dart';
 
@@ -25,13 +23,15 @@ Future<void> main() async {
   // 播放器引擎初始化（libmpv，Android + Windows 双端）
   MediaKit.ensureInitialized();
 
-  // Windows 桌面窗口初始化（全屏播放需要）
-  if (!kIsWeb && Platform.isWindows) {
-    await windowManager.ensureInitialized();
-  }
-
   // 本地存储 / 设备信息 / 本地数据初始化
   await StorageService.init();
+
+  // Windows 桌面窗口（标题 / 最小尺寸 / 恢复上次窗口位置，全屏播放依赖）
+  await WindowService.init();
+
+  // 系统托盘（简剧图标 + 右键菜单，关闭窗口时收进托盘）
+  await TrayService.init();
+
   await DeviceService.init();
   FavoriteService.init();
   HistoryService.init();

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/history_entry.dart';
 import '../../core/services/history_service.dart';
+import '../../core/theme/responsive.dart';
 import '../../widgets/cover_image.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
@@ -31,36 +32,39 @@ class _HistoryPageState extends State<HistoryPage> {
             ),
         ],
       ),
-      body: history.isEmpty
-          ? const EmptyView(message: '暂无观看记录')
-          : ListView.separated(
-              padding: EdgeInsets.only(
-                top: 6,
-                bottom: MediaQuery.paddingOf(context).bottom + 32,
+      body: CenteredContent(
+        child: history.isEmpty
+            ? const EmptyView(message: '暂无观看记录')
+            : ListView.separated(
+                padding: EdgeInsets.only(
+                  top: 6,
+                  bottom: AppLayout.scrollBottom(context, mobileInset: 32),
+                ),
+                itemCount: history.length,
+                separatorBuilder: (_, _) => const Divider(indent: 76),
+                itemBuilder: (context, index) {
+                  final record = history[index];
+                  return Dismissible(
+                    key: ValueKey('history-${record.drama.bookId}'),
+                    direction: DismissDirection.endToStart,
+                    background: Container(
+                      color: Colors.redAccent,
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      child: const Icon(Icons.delete_outline_rounded,
+                          color: Colors.white),
+                    ),
+                    onDismissed: (_) async {
+                      await HistoryService.remove(record.drama.bookId);
+                      debugPrint(
+                          '[HIS] swiped removed ${record.drama.bookId}');
+                      if (mounted) setState(() {});
+                    },
+                    child: _buildItem(context, record),
+                  );
+                },
               ),
-              itemCount: history.length,
-              separatorBuilder: (_, _) => const Divider(indent: 76),
-              itemBuilder: (context, index) {
-                final record = history[index];
-                return Dismissible(
-                  key: ValueKey('history-${record.drama.bookId}'),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    color: Colors.redAccent,
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    child: const Icon(Icons.delete_outline_rounded,
-                        color: Colors.white),
-                  ),
-                  onDismissed: (_) async {
-                    await HistoryService.remove(record.drama.bookId);
-                    debugPrint('[HIS] swiped removed ${record.drama.bookId}');
-                    if (mounted) setState(() {});
-                  },
-                  child: _buildItem(context, record),
-                );
-              },
-            ),
+      ),
     );
   }
 

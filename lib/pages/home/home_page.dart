@@ -8,7 +8,11 @@ import '../../core/services/play_lines.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/responsive.dart';
+import '../../widgets/brand_icon.dart';
 import '../../widgets/drama_card.dart';
+import '../../widgets/poster_card.dart';
+import '../../widgets/search_trigger.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
 import '../search/search_page.dart';
@@ -19,6 +23,7 @@ import '../search/search_page.dart';
 /// 3. 下拉分页加载更多短剧
 /// 4. 展示封面、标题、简介、集数、热度
 /// 5. 点击卡片进入短剧详情页
+/// 6. 宽窗口（桌面）自动切换为响应式海报网格
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -29,7 +34,6 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage>
     with AutomaticKeepAliveClientMixin {
   final List<Drama> _list = [];
-  final ScrollController _scroll = ScrollController();
 
   bool _loading = true;
   bool _loadingMore = false;
@@ -45,18 +49,16 @@ class _HomePageState extends State<HomePage>
   void initState() {
     super.initState();
     _refresh();
-    _scroll.addListener(() {
-      if (_scroll.position.pixels >
-          _scroll.position.maxScrollExtent - 400) {
-        _loadMore();
-      }
-    });
   }
 
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
+  /// 滚动到底部 400px 触发分页（走通知而非 ScrollController，
+  /// 宽窄布局切换、列表/网格互换时不会出现控制器重复挂载）
+  bool _onScroll(ScrollNotification n) {
+    if (n.depth != 0 || !_hasMore || _loading || _loadingMore || _error) {
+      return false;
+    }
+    if (n.metrics.pixels > n.metrics.maxScrollExtent - 400) _loadMore();
+    return false;
   }
 
   Future<void> _refresh() async {
@@ -136,6 +138,7 @@ class _HomePageState extends State<HomePage>
     final outline = Theme.of(context).colorScheme.outline;
     showModalBottomSheet<void>(
       context: context,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -224,14 +227,14 @@ class _HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final seed = AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
+    final wide = AppLayout.isWide(context);
 
     return Scaffold(
       appBar: AppBar(
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.play_circle_fill_rounded, color: seed, size: 22),
+            const BrandIcon(size: 22),
             const SizedBox(width: 6),
             const Text('简剧'),
           ],
@@ -243,13 +246,16 @@ class _HomePageState extends State<HomePage>
             icon: const Icon(Icons.dns_outlined),
             onPressed: _showSourceSheet,
           ),
-          IconButton(
-            tooltip: '搜索',
-            icon: const Icon(Icons.search_rounded),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SearchPage()),
+          if (wide)
+            const SearchTrigger()
+          else
+            IconButton(
+              tooltip: '搜索',
+              icon: const Icon(Icons.search_rounded),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SearchPage()),
+              ),
             ),
-          ),
         ],
       ),
       body: _buildBody(context),
@@ -264,32 +270,66 @@ class _HomePageState extends State<HomePage>
     if (_list.isEmpty) {
       return const EmptyView(message: '暂无推荐内容');
     }
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScroll,
+      child: AppLayout.isWide(context)
+          ? _buildWideGrid(context)
+          : _buildNarrowList(context),
+    );
+  }
+
+  /// 桌面端：响应式海报网格（列数随窗口宽度自动增减）
+  Widget _buildWideGrid(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = AppLayout.columnsFor(
+            constraints.maxWidth,
+            targetWidth: 176,
+            min: 3,
+            max: 8,
+            gutter: AppLayout.wideGutter,
+          );
+          return GridView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(AppLayout.wideGutter, 18,
+                AppLayout.wideGutter, AppLayout.wideBottom),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              mainAxisSpacing: 22,
+              crossAxisSpacing: 16,
+              childAspectRatio: 0.64,
+            ),
+            itemCount: _list.length + (_hasMore ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index >= _list.length) return _moreSpinner();
+              final drama = _list[index];
+              return PosterCard(
+                drama: drama,
+                onTap: () => _openDetail(drama),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  /// 移动端：单列信息流卡片
+  Widget _buildNarrowList(BuildContext context) {
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView.builder(
-        controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
         // 底部留出悬浮导航条空间
         padding: EdgeInsets.only(
           top: 6,
-          bottom: MediaQuery.paddingOf(context).bottom + 96,
+          bottom: AppLayout.scrollBottom(context),
         ),
         itemCount: _list.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index >= _list.length) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 18),
-              child: _loadingMore
-                  ? const Center(
-                      child: SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2.2),
-                      ),
-                    )
-                  : const SizedBox.shrink(),
-            );
-          }
+          if (index >= _list.length) return _moreSpinner();
           final drama = _list[index];
           return DramaCard(
             drama: drama,
@@ -299,6 +339,19 @@ class _HomePageState extends State<HomePage>
       ),
     );
   }
+
+  Widget _moreSpinner() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        child: _loadingMore
+            ? const Center(
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2.2),
+                ),
+              )
+            : const SizedBox.shrink(),
+      );
 
   void _openDetail(Drama drama) {
     Navigator.of(context).push(

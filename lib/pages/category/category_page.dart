@@ -6,7 +6,9 @@ import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
-import '../../widgets/cover_image.dart';
+import '../../core/theme/responsive.dart';
+import '../../widgets/poster_card.dart';
+import '../../widgets/search_trigger.dart';
 import '../../widgets/state_views.dart';
 import '../detail/detail_page.dart';
 import '../search/search_page.dart';
@@ -16,6 +18,7 @@ import '../search/search_page.dart';
 /// 1. 顶部类型切换，切换后重新拉取
 /// 2. 网格瀑布展示封面、标题、集数、状态
 /// 3. 下拉刷新 + 上滑分页（官方每页 24 条，共 34 页）
+/// 4. 宽窗口下网格列数随可用宽度自动增减
 class CategoryPage extends StatefulWidget {
   const CategoryPage({super.key});
 
@@ -140,17 +143,21 @@ class _CategoryPageState extends State<CategoryPage>
     final seed =
         AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
 
+    final wide = AppLayout.isWide(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('分类'),
         actions: [
-          IconButton(
-            tooltip: '搜索',
-            icon: const Icon(Icons.search_rounded),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SearchPage()),
+          if (wide)
+            const SearchTrigger()
+          else
+            IconButton(
+              tooltip: '搜索',
+              icon: const Icon(Icons.search_rounded),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SearchPage()),
+              ),
             ),
-          ),
         ],
       ),
       body: Column(
@@ -174,36 +181,55 @@ class _CategoryPageState extends State<CategoryPage>
 
     return RefreshIndicator(
       onRefresh: _refresh,
-      child: GridView.builder(
-        controller: _scroll,
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.fromLTRB(
-          16,
-          4,
-          16,
-          MediaQuery.paddingOf(context).bottom + 96,
-        ),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          mainAxisSpacing: 14,
-          crossAxisSpacing: 10,
-          childAspectRatio: 0.58,
-        ),
-        itemCount: _list.length + (_hasMore ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (index >= _list.length) {
-            return Center(
-              child: _loadingMore
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2.2),
-                    )
-                  : const SizedBox.shrink(),
-            );
-          }
-          final drama = _list[index];
-          return _GridItem(drama: drama, onTap: () => _openDetail(drama));
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = AppLayout.isWide(context);
+          final gutter = wide ? AppLayout.wideGutter : 16.0;
+          // 窄窗口保持原 3 列，宽窗口按可用宽度自适应
+          final columns = wide
+              ? AppLayout.columnsFor(
+                  constraints.maxWidth,
+                  targetWidth: 176,
+                  min: 3,
+                  max: 8,
+                  gutter: gutter,
+                )
+              : 3;
+          return GridView.builder(
+            controller: _scroll,
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(
+              gutter,
+              4,
+              gutter,
+              AppLayout.scrollBottom(context),
+            ),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              mainAxisSpacing: wide ? 22 : 14,
+              crossAxisSpacing: wide ? 16 : 10,
+              childAspectRatio: 0.58,
+            ),
+            itemCount: _list.length + (_hasMore ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index >= _list.length) {
+                return Center(
+                  child: _loadingMore
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2.2),
+                        )
+                      : const SizedBox.shrink(),
+                );
+              }
+              final drama = _list[index];
+              return PosterCard(
+                drama: drama,
+                onTap: () => _openDetail(drama),
+              );
+            },
+          );
         },
       ),
     );
@@ -261,81 +287,6 @@ class _SlugBar extends StatelessWidget {
             visualDensity: VisualDensity.compact,
           );
         },
-      ),
-    );
-  }
-}
-
-/// 网格卡片：封面 + 标题 + 集数/状态（热度有值时一并展示）
-class _GridItem extends StatelessWidget {
-  final Drama drama;
-  final VoidCallback onTap;
-
-  const _GridItem({required this.drama, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final secondary = isDark ? Colors.white54 : Colors.black45;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: CoverImage(
-              url: drama.coverUrl,
-              width: double.infinity,
-              height: double.infinity,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            drama.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 3),
-          Row(
-            children: [
-              if (drama.readCountText.isNotEmpty) ...[
-                Icon(Icons.local_fire_department_rounded,
-                    size: 12, color: theme.colorScheme.primary),
-                const SizedBox(width: 2),
-                Flexible(
-                  child: Text(
-                    drama.readCountText,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 11, color: theme.colorScheme.primary),
-                  ),
-                ),
-              ] else if (drama.statusText.isNotEmpty) ...[
-                Flexible(
-                  child: Text(
-                    drama.statusText,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: secondary),
-                  ),
-                ),
-              ] else if (drama.episodeCount > 0) ...[
-                Flexible(
-                  child: Text(
-                    '${drama.episodeCount}集',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: secondary),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ],
       ),
     );
   }
