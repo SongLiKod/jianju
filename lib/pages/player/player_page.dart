@@ -9,12 +9,14 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../../core/constants/api_constants.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/models/drama.dart';
 import '../../core/models/episode.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/history_service.dart';
 import '../../core/services/pip_service.dart';
+import '../../core/services/play_headers.dart';
 import '../../core/services/play_lines.dart';
 import '../../core/services/prebuffer_service.dart';
 import '../../core/state/settings_provider.dart';
@@ -70,6 +72,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   /// 换集序号：过期异步结果直接丢弃，防止快速换集时旧解析覆盖新集
   int _openSeq = 0;
+
+  /// 直链打不开（mpv「Failed to open」）的自动换线重试次数（连续最多 2 次）
+  int _openFails = 0;
+
+  /// 本集累计自动换线次数：与 _openFails 配合，防「起播 3s 又失败」
+  /// 反复换线抖动，单集硬上限 4 次（换集/手动重试归零）
+  int _openAutoTries = 0;
+
+  /// 本次 open 实际使用的直链：失败时用它自检原因、换线时排除它
+  String? _lastPlayUrl;
+
+  /// 加载期（_loading 为 true）收到的「Failed to open」：挂起，
+  /// open 流程收尾时再触发自动换线，避免错误被 _loading 门槛吞掉
+  String? _pendingOpenError;
 
   // ==================== 预载下一集 ====================
   bool _preloadStarted = false;
@@ -180,31 +196,46 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       ..add(_player.stream.buffer
           .listen((v) => mountedSafe(() => setState(() => _bufferEnd = v))))
       ..add(_player.stream.error.listen((e) {
-        if (e.isNotEmpty && mounted && !_loading) {
-          debugPrint('[EP] player error: $e');
+        if (e.isEmpty || !mounted) return;
+        // 起播即打不开：多半是 CDN 防盗链（403）或地址已失效——排除该地址
+        // 自动换线重解析，仍打不开才转错误页。加载期（含 seek 等待）收到的
+        // 先挂起，open 流程收尾时再处理，避免错误被 _loading 门槛吞掉
+        if (RegExp(r'failed to open', caseSensitive: false).hasMatch(e)) {
+          debugPrint('[EP] player open failed: $e (loading=$_loading)');
           PipService.setActive(false);
-          // CDN 中途掐线（ffurl_read -103/ECONNABORTED、超时等）mpv 会
-          // 自动重载续播，属可恢复错误：先只记日志，6s 没恢复才转错误页
-          final recoverable = RegExp(
-                  r'ffurl_read|tcp:|timeout|timed out|Connection|'
-                  r'ECONNABORTED|Network is unreachable|Broken pipe',
-                  caseSensitive: false)
-              .hasMatch(e);
-          if (!recoverable) {
-            mountedSafe(() => setState(() => _error = '播放出错：$e'));
-            return;
+          if (_loading) {
+            _pendingOpenError ??= e;
+          } else {
+            final pending = _pendingOpenError;
+            _pendingOpenError = null;
+            _onOpenFailed(pending ?? e);
           }
-          final seq = _openSeq;
-          final pAt = _player.state.position;
-          _errorWatchdog?.cancel();
-          _errorWatchdog = Timer(const Duration(seconds: 6), () {
-            if (!mounted || seq != _openSeq || _error.isNotEmpty) return;
-            if (!_loading && !_playing && _player.state.position == pAt) {
-              debugPrint('[EP] 断流 6s 未自动恢复，转为错误提示');
-              setState(() => _error = '播放出错：$e');
-            }
-          });
+          return;
         }
+        if (_loading) return;
+        debugPrint('[EP] player error: $e');
+        PipService.setActive(false);
+        // CDN 中途掐线（ffurl_read -103/ECONNABORTED、超时等）mpv 会
+        // 自动重载续播，属可恢复错误：先只记日志，6s 没恢复才转错误页
+        final recoverable = RegExp(
+                r'ffurl_read|tcp:|timeout|timed out|Connection|'
+                r'ECONNABORTED|Network is unreachable|Broken pipe',
+                caseSensitive: false)
+            .hasMatch(e);
+        if (!recoverable) {
+          mountedSafe(() => setState(() => _error = '播放出错：$e'));
+          return;
+        }
+        final seq = _openSeq;
+        final pAt = _player.state.position;
+        _errorWatchdog?.cancel();
+        _errorWatchdog = Timer(const Duration(seconds: 6), () {
+          if (!mounted || seq != _openSeq || _error.isNotEmpty) return;
+          if (!_loading && !_playing && _player.state.position == pAt) {
+            debugPrint('[EP] 断流 6s 未自动恢复，转为错误提示');
+            setState(() => _error = '播放出错：$e');
+          }
+        });
       }));
     // 播放完毕自动跳转下一集（换集瞬间的过期 completed 由 _loading/_endHandled 拦截）
     _completedSub = _player.stream.completed.listen((completed) {
@@ -215,6 +246,34 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void mountedSafe(VoidCallback fn) {
     if (mounted) fn();
+  }
+
+  /// mpv 打不开直链（`Failed to open <url>`）：排除该地址重新解析，
+  /// 逼其他线路/来源给出新地址（连续最多 2 次、单集最多 4 次）；用尽才
+  /// 转错误页，并用与播放器一致的请求头自检一次，把原因（403 防盗链/
+  /// 地址失效/网络不通）补进错误文案，便于判断该换线路还是该检查网络
+  Future<void> _onOpenFailed(String e) async {
+    final seq = _openSeq;
+    final url = _lastPlayUrl;
+    final canRetry = url != null &&
+        url.startsWith('http') &&
+        _openFails < 2 &&
+        _openAutoTries < 4;
+    if (canRetry) {
+      _openFails++;
+      _openAutoTries++;
+      debugPrint('[EP] 直链打不开，换线重试（第 $_openAutoTries 次）: $url');
+      await _openEpisode(
+        _episode,
+        resumeAt: _position,
+        excludeUrl: url,
+      );
+      return;
+    }
+    mountedSafe(() => setState(() => _error = '播放出错：$e'));
+    final why = await PlayHeaders.diagnose(url ?? '');
+    if (!mounted || seq != _openSeq || why.isEmpty) return;
+    mountedSafe(() => setState(() => _error = '播放出错：$e\n$why'));
   }
 
   /// 诊断节流：位置日志最多每 3 秒一条（排查"进度卡死"类问题）
@@ -233,6 +292,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _endHandled = false;
     }
     if (v > _lastStable) _lastStable = v;
+    // 稳定起播即视为本轮换线成功：归还自动换线预算，供后续故障使用
+    if (_openFails > 0 && v > const Duration(seconds: 3)) _openFails = 0;
     _recoverJumpBack(prev, v);
     _maybePreloadNext(v);
     _maybeFinish(v);
@@ -543,6 +604,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     await set('cache-secs', '$bufferSecs'); // 网络流读取余量（设置页可调档位）
     await set('audio-pitch-correction', 'yes'); // 倍速时保持音高
     await set('volume-max', '100'); // 禁止超过 100% 增益导致破音
+    // 防盗链 CDN 按 UA 过滤：与 Media.httpHeaders 双保险，避免 UA 走
+    // mpv 自带的 mpv/curl 串被 403 拒（Failed to open）
+    await set('user-agent', ApiConstants.browserUserAgent);
   }
 
   // ==================== 换集 / 播放源 ====================
@@ -561,14 +625,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     String? presetUrl,
     Duration? resumeAt,
     String? localPath,
+    String? excludeUrl,
   }) async {
     if (!mounted) return;
     debugPrint('[EP] open #${episode.index} resume=$resumeSaved'
         '${localPath != null ? ' local=1' : ''}'
         '${presetUrl != null ? ' preset=1' : ''}'
+        '${excludeUrl != null ? ' exclude=1' : ''}'
         '${resumeAt != null ? ' at=${_fmt(resumeAt)}' : ''}');
     final seq = ++_openSeq;
     _endHandled = false;
+    // 换集/手动重试给足自动换线预算；自动重试本身（带 excludeUrl）不重置
+    if (excludeUrl == null) {
+      _openFails = 0;
+      _openAutoTries = 0;
+    }
+    _pendingOpenError = null; // 上一集挂起的加载期错误不再追责
     PipService.setActive(false); // 解析/换集期间不满足自动小窗条件
     // 预载/进度防护状态属于上一集，换集即重置
     _preloadStarted = false;
@@ -625,9 +697,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           vid: episode.itemId,
           title: widget.drama.title,
           episodeIndex: episode.index,
+          excludeUrl: excludeUrl,
         );
       }
       if (!mounted || seq != _openSeq) return;
+      _lastPlayUrl = playUrl;
       await _applyMpvTweaks();
       if (!mounted || seq != _openSeq) return;
       // 网络流先改写为去广告清单：中插广告段会让 mpv 把流重启回 00:00
@@ -635,7 +709,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // 本地 .ts/.mp4 及无广告清单会返回 null，原样起播。
       final rewritten = await PrebufferService.rewritePlaylist(playUrl);
       if (!mounted || seq != _openSeq) return;
-      await _player.open(Media(rewritten ?? playUrl));
+      // 浏览器请求头（UA + 来源 Referer）：CDN 防盗链时 mpv 裸连会被 403
+      // 拒绝，表现为「播放出错：Failed to open <m3u8>」。清单改写成文件时
+      // 头按本地清单登记，供 mpv 拉分片时同样带上
+      await _player.open(Media(
+        rewritten ?? playUrl,
+        httpHeaders: PlayHeaders.forUrl(playUrl),
+      ));
       if (!mounted || seq != _openSeq) return;
       await _player.setRate(_speed);
       if (!mounted || seq != _openSeq) return;
@@ -657,6 +737,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       debugPrint('[EP] opened #${episode.index} ready');
       _scheduleHideControls();
       _startPrebufferChain(); // 播放一开始即跨集预缓存（不等结尾）
+      // 加载期挂起的「Failed to open」在此兑现：触发自动换线重试
+      final pending = _pendingOpenError;
+      _pendingOpenError = null;
+      if (pending != null && mounted && seq == _openSeq) {
+        debugPrint('[EP] 起播期错误延后处理: $pending');
+        _onOpenFailed(pending);
+      }
     } catch (e) {
       if (!mounted || seq != _openSeq) return;
       debugPrint('[EP] open failed #${episode.index}: $e');
@@ -1406,8 +1493,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               OutlinedButton(
                 style:
                     OutlinedButton.styleFrom(foregroundColor: Colors.white70),
-                onPressed: () =>
-                    _openEpisode(_episode, resumeSaved: true, resumeAt: _position),
+                onPressed: () {
+                  _openFails = 0; // 手动重试：重新给足自动换线预算
+                  _openAutoTries = 0;
+                  _openEpisode(_episode,
+                      resumeSaved: true, resumeAt: _position);
+                },
                 child: const Text('重试'),
               ),
               const SizedBox(width: 10),

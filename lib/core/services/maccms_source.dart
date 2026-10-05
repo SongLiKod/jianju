@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../constants/api_constants.dart';
 import '../models/drama.dart';
 import '../models/episode.dart';
+import 'play_headers.dart';
 import 'play_lines.dart';
 import 'settings_service.dart';
 
@@ -206,7 +207,11 @@ class MaccmsSource {
     ];
     for (final g in candidates) {
       final url = urlOfEpisode(g, nid);
-      if (url != null) return url;
+      if (url != null) {
+        // 登记来源站点：播放器请求该直链时补 Referer（防盗链）
+        PlayHeaders.register(url, referer: '${line.base}/');
+        return url;
+      }
     }
     throw Exception('该集无播放地址');
   }

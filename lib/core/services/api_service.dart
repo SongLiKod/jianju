@@ -250,36 +250,54 @@ class ApiService {
   /// 1. 手动锁定线路（见 [SettingsService.pinnedLineId]）→ 只走该线路；
   /// 2. 默认 → 官方网页直链 MP4（前 [ApiConstants.accessibleEpisodeCount] 集可用）；
   /// 3. 官方无直链 → 内置线路按测速分批竞速，取最快成功者（见 [PlayLineResolver]）。
+  ///
+  /// [excludeUrl] 为已确认打不开的地址：各来源返回同一地址时一律跳过，
+  /// 转而走下一级来源（官方 → 线路竞速），用于播放失败后的自动换源重试。
   static Future<String> fetchPlayUrl({
     required String seriesId,
     required String vid,
     String? title,
     int? episodeIndex,
+    String? excludeUrl,
   }) async {
     // 整站源分集：按 ID 内嵌的源组/集序号取该站精确直链
     if (MaccmsSource.hasPrefix(vid)) {
       final site = MaccmsSource.byId(vid);
       if (site != null) {
         try {
-          return await site.playUrl(vid);
+          final url = await site.playUrl(vid);
+          if (url == excludeUrl) throw Exception('该地址已失效');
+          return url;
         } catch (e) {
           debugPrint('站点取链失败，转线路竞速: $e');
           if (title != null && episodeIndex != null) {
             return PlayLineResolver.resolve(
-                title: title, episodeIndex: episodeIndex);
+              title: title,
+              episodeIndex: episodeIndex,
+              exclude: excludeUrl,
+            );
           }
           rethrow;
         }
       }
     }
     // 第三方红果聚合源分集
-    if (Api52Source.hasPrefix(vid)) return Api52Source.play(vid);
+    if (Api52Source.hasPrefix(vid)) {
+      final url = await Api52Source.play(vid);
+      if (url != excludeUrl) return url;
+      debugPrint('聚合源直链已失效，转官方/线路兜底');
+      // 不返回：继续走下方 官方直链 → 线路竞速 的兜底顺序
+    }
 
     final pinned = _pinnedLineId();
 
     // 手动锁定：跳过官方源，严格按所选线路解析
     if (pinned.isNotEmpty && title != null && episodeIndex != null) {
-      return PlayLineResolver.resolve(title: title, episodeIndex: episodeIndex);
+      return PlayLineResolver.resolve(
+        title: title,
+        episodeIndex: episodeIndex,
+        exclude: excludeUrl,
+      );
     }
 
     try {
@@ -290,18 +308,28 @@ class ApiService {
       final info = loader?['video_player_info'];
       if (info is Map) {
         final mainUrl = info['main_url']?.toString();
-        if (mainUrl != null && mainUrl.startsWith('http')) return mainUrl;
+        if (mainUrl != null &&
+            mainUrl.startsWith('http') &&
+            mainUrl != excludeUrl) {
+          return mainUrl;
+        }
       }
       // 兜底：递归探测直链
       final direct = JsonUtils.findFirstStringContaining(loader, '.mp4');
-      if (direct != null && direct.startsWith('http')) return direct;
-      throw Exception('官方播放页无直链');
+      if (direct != null && direct.startsWith('http') && direct != excludeUrl) {
+        return direct;
+      }
+      throw Exception(excludeUrl != null ? '官方直链已失效' : '官方播放页无直链');
     } catch (e) {
       debugPrint('官方播放页取链失败，转内置线路: $e');
     }
 
     if (title != null && episodeIndex != null) {
-      return PlayLineResolver.resolve(title: title, episodeIndex: episodeIndex);
+      return PlayLineResolver.resolve(
+        title: title,
+        episodeIndex: episodeIndex,
+        exclude: excludeUrl,
+      );
     }
     throw Exception('未获取到播放地址');
   }

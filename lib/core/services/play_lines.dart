@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../constants/api_constants.dart';
 import '../constants/app_constants.dart';
+import 'play_headers.dart';
 import 'settings_service.dart';
 import 'storage_service.dart';
 
@@ -311,10 +312,14 @@ class PlayLineResolver {
   ///
   /// 手动锁定线路（或显式传 [onLine]）时只走该线路；否则按测速顺序分批并发
   /// 竞速，首个成功返回。
+  ///
+  /// [exclude] 为已确认打不开的地址：命中它的缓存与取链结果一律作废，
+  /// 逼出其他线路的地址（用于「Failed to open」后的自动换线重试）。
   static Future<String> resolve({
     required String title,
     required int episodeIndex,
     PlayLine? onLine,
+    String? exclude,
   }) async {
     lastError = null;
     final pinned = onLine?.id ?? _pinnedLineId();
@@ -323,7 +328,7 @@ class PlayLineResolver {
       final line = onLine ?? byId(pinned);
       if (line != null) {
         try {
-          final url = await _resolveOnLine(line, title, episodeIndex);
+          final url = await _resolveOnLine(line, title, episodeIndex, exclude);
           lastUsedLine = line;
           debugPlayLine('锁定线路 ${line.id} -> $url');
           return url;
@@ -336,7 +341,7 @@ class PlayLineResolver {
 
     final lines = orderedLines();
     try {
-      final win = await _raceBatches(lines, title, episodeIndex)
+      final win = await _raceBatches(lines, title, episodeIndex, exclude)
           .timeout(_totalBudget);
       if (win != null) {
         lastUsedLine = win.line;
@@ -348,7 +353,9 @@ class PlayLineResolver {
       throw Exception(lastError);
     }
 
-    lastError = '全部 ${lines.length} 条线路均解析失败（该集可能未被第三方站收录，可稍后重试或手动换线）';
+    lastError = exclude == null
+        ? '全部 ${lines.length} 条线路均解析失败（该集可能未被第三方站收录，可稍后重试或手动换线）'
+        : '所有线路给出的地址都打不开，请换线路或稍后重试';
     throw Exception(lastError);
   }
 
@@ -357,11 +364,12 @@ class PlayLineResolver {
     List<PlayLine> lines,
     String title,
     int episodeIndex,
+    String? exclude,
   ) async {
     for (var i = 0; i < lines.length; i += _batchSize) {
       final batch = <Future<_Win?>>[];
       for (var j = i; j < lines.length && j < i + _batchSize; j++) {
-        batch.add(_tryLine(lines[j], title, episodeIndex));
+        batch.add(_tryLine(lines[j], title, episodeIndex, exclude));
       }
       final win = await _firstSuccess(batch);
       if (win != null) return win;
@@ -388,9 +396,10 @@ class PlayLineResolver {
   }
 
   /// 竞速包装：任何失败/超时都归为 null，不向外抛
-  static Future<_Win?> _tryLine(PlayLine line, String title, int episodeIndex) async {
+  static Future<_Win?> _tryLine(
+      PlayLine line, String title, int episodeIndex, String? exclude) async {
     try {
-      final url = await _resolveOnLine(line, title, episodeIndex)
+      final url = await _resolveOnLine(line, title, episodeIndex, exclude)
           .timeout(_lineTimeout);
       return _Win(line, url);
     } catch (_) {
@@ -424,10 +433,12 @@ class PlayLineResolver {
     PlayLine line,
     String title,
     int episodeIndex,
+    String? exclude,
   ) async {
     final key = '${line.id}|$title|$episodeIndex';
     final hit = _cache[key];
-    if (hit != null) return hit;
+    if (hit != null && hit != exclude) return hit;
+    if (hit != null) _cache.remove(key); // 缓存的地址已确认打不开，作废
 
     final sw = Stopwatch()..start();
     final String url;
@@ -435,12 +446,19 @@ class PlayLineResolver {
       url = line.mode == PlayLineMode.api
           ? await _resolveApi(line, title, episodeIndex)
           : await _resolveHtml(line, title, episodeIndex);
+      if (exclude != null && url == exclude) {
+        // 与上次失败的地址一致：这条线路（的这个结果）救不回来，换线
+        throw Exception('线路给出的地址已失效');
+      }
     } catch (e) {
       _recordFailure(line);
       rethrow;
     }
     sw.stop();
     _recordSuccess(line, sw.elapsedMilliseconds);
+
+    // 登记来源站点：播放器/预缓存请求该直链时补 Referer（防盗链）
+    PlayHeaders.register(url, referer: '${line.base}/');
 
     if (_cache.length >= _maxCache) _cache.clear();
     _cache[key] = url;
