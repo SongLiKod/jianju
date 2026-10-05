@@ -20,6 +20,7 @@ import '../../core/services/play_headers.dart';
 import '../../core/services/play_lines.dart';
 import '../../core/services/prebuffer_service.dart';
 import '../../core/state/settings_provider.dart';
+import '../../core/theme/responsive.dart';
 
 /// 播放模块（核心）
 ///
@@ -62,6 +63,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Duration _duration = Duration.zero;
   double? _dragValue;
   bool _controlsVisible = true;
+
+  /// 鼠标是否悬停在播放区：悬停期间控件不自动隐藏（桌面端）
+  bool _hovering = false;
 
   /// 画中画小窗模式（小窗内隐藏所有浮层，只留画面）
   bool _pipMode = false;
@@ -928,7 +932,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void _scheduleHideControls() {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && _playing) setState(() => _controlsVisible = false);
+      if (mounted && _playing && !_hovering) {
+        setState(() => _controlsVisible = false);
+      }
     });
   }
 
@@ -988,6 +994,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final defaultSpeed = context.read<SettingsProvider>().defaultSpeed;
     await showModalBottomSheet<void>(
       context: context,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1051,6 +1058,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _showControls();
     await showModalBottomSheet<void>(
       context: context,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1129,6 +1137,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1227,6 +1236,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      constraints: sheetConstraints(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1370,26 +1380,55 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final Widget page = Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _toggleControls,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (!_fullscreen) ..._buildPortraitLayout(),
-            Video(
-              controller: _controller,
-              controls: NoVideoControls,
-            ),
-            if (_loading) _buildLoading(),
-            if (_error.isNotEmpty) _buildError(),
-            _buildControls(context),
-            if (!_pipMode) _buildPreloadHint(),
-            if (!_pipMode && !_loading && _error.isEmpty) _buildSlimProgress(context),
-          ],
+      body: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) {
+          _hovering = true;
+          // 鼠标移入即唤出控件，并取消自动隐藏计时
+          if (!_controlsVisible && !_pipMode && !_loading) _showControls();
+        },
+        onExit: (_) {
+          _hovering = false;
+          _scheduleHideControls();
+        },
+        child: GestureDetector(
+          onTap: _toggleControls,
+          // 桌面端双击全屏；移动端不挂双击判定，避免单击出现延迟
+          onDoubleTap: PlatformCheck.isAndroid ? null : _toggleFullscreen,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (!_fullscreen) ..._buildPortraitLayout(),
+              Video(
+                controller: _controller,
+                controls: NoVideoControls,
+              ),
+              if (_loading) _buildLoading(),
+              if (_error.isNotEmpty) _buildError(),
+              _buildControls(context),
+              if (!_pipMode) _buildPreloadHint(),
+              if (!_pipMode && !_loading && _error.isEmpty)
+                _buildSlimProgress(context),
+            ],
+          ),
         ),
       ),
+    );
+
+    // Esc：全屏时先退出全屏，否则返回上一页（优先级高于全局 Esc 绑定）
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (_fullscreen) {
+            _toggleFullscreen();
+          } else {
+            Navigator.of(context).maybePop();
+          }
+        },
+      },
+      child: page,
     );
   }
 

@@ -1,16 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../core/state/settings_provider.dart';
 import '../core/state/theme_provider.dart';
 import '../core/theme/app_theme.dart';
+import '../core/theme/responsive.dart';
+import '../widgets/app_sidebar.dart';
 import '../widgets/floating_nav_bar.dart';
 import 'category/category_page.dart';
 import 'home/home_page.dart';
 import 'mine/mine_page.dart';
 import 'rank/rank_page.dart';
+import 'search/search_page.dart';
+import 'settings/settings_page.dart';
 
-/// 主框架：四个 Tab + 苹果风格悬浮导航条
+/// 主框架
+///
+/// - 窄窗口（移动端）：四个 Tab + 苹果风格悬浮导航条
+/// - 宽窗口（桌面端）：左侧常驻导航栏 + 内容区，支持 Ctrl+1~4 切 Tab、
+///   Ctrl+F / Ctrl+K 打开搜索
 class RootPage extends StatefulWidget {
   const RootPage({super.key});
 
@@ -34,38 +43,81 @@ class _RootPageState extends State<RootPage> {
     NavItem(icon: Icons.favorite_border_rounded, activeIcon: Icons.favorite_rounded, label: '我的'),
   ];
 
+  void _switchTab(int i) {
+    if (i == _index) return;
+    debugPrint('[NAV] tab=$i');
+    setState(() => _index = i);
+  }
+
+  void _openSearch() => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const SearchPage()),
+      );
+
+  void _openSettings() => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const SettingsPage()),
+      );
+
+  Map<ShortcutActivator, VoidCallback> get _shortcuts => {
+        const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => _switchTab(0),
+        const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => _switchTab(1),
+        const SingleActivator(LogicalKeyboardKey.digit3, control: true): () => _switchTab(2),
+        const SingleActivator(LogicalKeyboardKey.digit4, control: true): () => _switchTab(3),
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true): _openSearch,
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): _openSearch,
+      };
+
   @override
   Widget build(BuildContext context) {
+    final wide = AppLayout.isWide(context);
     final primary = context.watch<ThemeProvider>();
     final source = context.watch<SettingsProvider>().dataSource;
     final seed = AppPalette.colors[primary.colorIndex].color;
-    return Scaffold(
-      extendBody: true,
-      // 数据源切换后整树重建：四个 Tab 全部按新站点重新拉数据
-      body: IndexedStack(
-        key: ValueKey(source),
-        index: _index,
-        children: const [
-          HomePage(),
-          CategoryPage(),
-          RankPage(),
-          MinePage(),
-        ],
-      ),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-          child: FloatingNavBar(
-            items: _navItems,
-            currentIndex: _index,
-            primaryColor: seed,
-            onTap: (i) {
-              debugPrint('[NAV] tab=$i');
-              setState(() => _index = i);
-            },
-          ),
+
+    // 数据源切换后整树重建：四个 Tab 全部按新站点重新拉数据。
+    // IndexedStack 带 key，宽窄布局切换时仍按 key 复用，Tab 状态不丢。
+    final pages = IndexedStack(
+      key: ValueKey(source),
+      index: _index,
+      children: const [
+        HomePage(),
+        CategoryPage(),
+        RankPage(),
+        MinePage(),
+      ],
+    );
+
+    return CallbackShortcuts(
+      bindings: _shortcuts,
+      child: Scaffold(
+        // 桌面端没有底部悬浮条，不延展 body
+        extendBody: !wide,
+        body: Row(
+          children: [
+            if (wide)
+              AppSidebar(
+                items: _navItems,
+                currentIndex: _index,
+                primaryColor: seed,
+                onSelect: _switchTab,
+                onSettings: _openSettings,
+              ),
+            Expanded(child: pages),
+          ],
         ),
+        bottomNavigationBar: wide
+            ? null
+            : SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  child: FloatingNavBar(
+                    items: _navItems,
+                    currentIndex: _index,
+                    primaryColor: seed,
+                    onTap: _switchTab,
+                  ),
+                ),
+              ),
       ),
     );
   }

@@ -6,6 +6,7 @@ import '../../core/services/favorite_service.dart';
 import '../../core/services/history_service.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/responsive.dart';
 import '../favorites/favorites_page.dart';
 import '../history/history_page.dart';
 import '../settings/settings_page.dart';
@@ -23,68 +24,72 @@ class MinePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('我的')),
-      body: ListView(
-        padding: EdgeInsets.only(
-          top: 8,
-          bottom: MediaQuery.paddingOf(context).bottom + 96,
+      // 桌面端内容限宽居中，避免入口卡片被拉满整屏
+      body: CenteredContent(
+        child: ListView(
+          padding: EdgeInsets.only(
+            top: 8,
+            bottom: AppLayout.scrollBottom(context),
+          ),
+          children: [
+            // 顶部品牌区
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 28,
+                    backgroundColor: seed.withValues(alpha: 0.15),
+                    child: Icon(Icons.play_circle_fill_rounded,
+                        color: seed, size: 32),
+                  ),
+                  const SizedBox(width: 14),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(AppConstants.appName,
+                          style: TextStyle(
+                              fontSize: 20, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 3),
+                      Text(AppConstants.appTagline,
+                          style: TextStyle(
+                              fontSize: 12,
+                              color:
+                                  Theme.of(context).colorScheme.outline)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            _Tile(
+              icon: Icons.favorite_rounded,
+              title: '我的收藏',
+              subtitle: '$favCount 部短剧',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const FavoritesPage()),
+              ),
+            ),
+            _Tile(
+              icon: Icons.history_rounded,
+              title: '观看历史',
+              subtitle: historyCount == 0 ? '暂无观看记录' : '共 $historyCount 条记录',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const HistoryPage()),
+              ),
+            ),
+            _Tile(
+              icon: Icons.settings_outlined,
+              title: '设置',
+              subtitle: '主题、播放与数据清理',
+              onTap: () {
+                debugPrint('[NAV] mine: settings');
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SettingsPage()),
+                );
+              },
+            ),
+          ],
         ),
-        children: [
-          // 顶部品牌区
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 28,
-                  backgroundColor: seed.withValues(alpha: 0.15),
-                  child:
-                      Icon(Icons.play_circle_fill_rounded, color: seed, size: 32),
-                ),
-                const SizedBox(width: 14),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(AppConstants.appName,
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 3),
-                    Text(AppConstants.appTagline,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.outline)),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          _Tile(
-            icon: Icons.favorite_rounded,
-            title: '我的收藏',
-            subtitle: '$favCount 部短剧',
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const FavoritesPage()),
-            ),
-          ),
-          _Tile(
-            icon: Icons.history_rounded,
-            title: '观看历史',
-            subtitle: historyCount == 0 ? '暂无观看记录' : '共 $historyCount 条记录',
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const HistoryPage()),
-            ),
-          ),
-          _Tile(
-            icon: Icons.settings_outlined,
-            title: '设置',
-            subtitle: '主题、播放与数据清理',
-            onTap: () {
-              debugPrint('[NAV] mine: settings');
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsPage()),
-              );
-            },
-          ),
-        ],
       ),
     );
   }

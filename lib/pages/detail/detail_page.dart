@@ -9,6 +9,8 @@ import '../../core/services/favorite_service.dart';
 import '../../core/services/history_service.dart';
 import '../../core/state/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/responsive.dart';
+import '../../widgets/clickable.dart';
 import '../../widgets/cover_image.dart';
 import '../../widgets/state_views.dart';
 import '../player/player_page.dart';
@@ -138,19 +140,30 @@ class _DetailPageState extends State<DetailPage> {
           ? const LoadingView()
           : _error
               ? ErrorRetryView(onRetry: _load)
-              : ListView(
-                  padding: EdgeInsets.only(
-                    bottom: MediaQuery.paddingOf(context).bottom + 40,
-                  ),
-                  children: [
-                    _buildHeader(context, secondary, seed, isFav, record),
-                    _buildAbstract(context, secondary, isDark),
-                    _buildEpisodeSection(context, record, secondary, isDark),
-                    if (_related.isNotEmpty) ...[
-                      const Divider(),
-                      _buildRelated(context, secondary),
+              : CenteredContent(
+                  child: ListView(
+                    padding: EdgeInsets.only(
+                      bottom:
+                          AppLayout.scrollBottom(context, mobileInset: 40),
+                    ),
+                    children: [
+                      // 宽窗口下限宽，避免头部按钮/简介被拉到 960 宽
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 720),
+                        child:
+                            _buildHeader(context, secondary, seed, isFav, record),
+                      ),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 760),
+                        child: _buildAbstract(context, secondary, isDark),
+                      ),
+                      _buildEpisodeSection(context, record, secondary, isDark),
+                      if (_related.isNotEmpty) ...[
+                        const Divider(),
+                        _buildRelated(context, secondary),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
     );
   }
@@ -232,7 +245,7 @@ class _DetailPageState extends State<DetailPage> {
                       ),
                       const SizedBox(width: 10),
                       // 收藏/取消收藏
-                      GestureDetector(
+                      Clickable(
                         onTap: _toggleFavorite,
                         child: Container(
                           width: 44,
@@ -292,7 +305,7 @@ class _DetailPageState extends State<DetailPage> {
           Text('简介',
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
-          GestureDetector(
+          Clickable(
             onTap: () => setState(
                 () => _expandedAbstract = !_expandedAbstract),
             child: Text(
@@ -304,7 +317,7 @@ class _DetailPageState extends State<DetailPage> {
             ),
           ),
           if (text.length > 60)
-            GestureDetector(
+            Clickable(
               onTap: () => setState(
                   () => _expandedAbstract = !_expandedAbstract),
               child: Padding(
@@ -331,6 +344,15 @@ class _DetailPageState extends State<DetailPage> {
         child: EmptyView(message: '暂无分集信息'),
       );
     }
+    // 分集列数随可用宽度变化：手机 4 列，桌面按宽度增列
+    final screenW = MediaQuery.sizeOf(context).width;
+    final contentW = AppLayout.isWide(context)
+        ? (screenW - AppLayout.sidebarWidth)
+            .clamp(0.0, AppLayout.contentMaxWidth)
+            .toDouble()
+        : screenW;
+    final columns = AppLayout.columnsFor(contentW,
+        targetWidth: 132, min: 4, max: 8, gutter: 16);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -343,8 +365,8 @@ class _DetailPageState extends State<DetailPage> {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 4,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
             mainAxisSpacing: 8,
             crossAxisSpacing: 8,
             childAspectRatio: 1.9,
@@ -421,7 +443,7 @@ class _DetailPageState extends State<DetailPage> {
             separatorBuilder: (_, _) => const SizedBox(width: 10),
             itemBuilder: (context, index) {
               final d = _related[index];
-              return GestureDetector(
+              return Clickable(
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                       builder: (_) => DetailPage(bookId: d.bookId)),
