@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/episode.dart';
 import 'api_service.dart';
+import 'play_headers.dart';
 
 /// 跨集预缓存（"缓冲大小"设置的第二用途）
 ///
@@ -241,8 +242,9 @@ class PrebufferService {
     try {
       var listUrl = url;
       var body = '';
+      final hdrs = PlayHeaders.forUrl(url); // 清单与分片都带来源请求头
       for (var hop = 0; hop < 3; hop++) {
-        body = await _fetchText(listUrl, client);
+        body = await _fetchText(listUrl, client, hdrs);
         final variant = _firstVariant(body);
         if (variant == null) break;
         listUrl = Uri.parse(listUrl).resolve(variant).toString();
@@ -304,7 +306,7 @@ class PrebufferService {
       final base = Uri.parse(listUrl);
       for (var i = 0; i < segs.length; i++) {
         final segUrl = base.resolve(segs[i]).toString();
-        final bytes = await _fetchBytes(segUrl, client);
+        final bytes = await _fetchBytes(segUrl, client, hdrs);
         if (written + bytes.length > singleCap) {
           throw Exception('单集超出预算 ${_Fmt.mb(singleCap)}');
         }
@@ -364,8 +366,9 @@ class PrebufferService {
       try {
         var listUrl = url;
         var body = '';
+        final hdrs = PlayHeaders.forUrl(url);
         for (var hop = 0; hop < 3; hop++) {
-          body = await _fetchText(listUrl, client);
+          body = await _fetchText(listUrl, client, hdrs);
           final variant = _firstVariant(body);
           if (variant == null) break;
           listUrl = Uri.parse(listUrl).resolve(variant).toString();
@@ -484,13 +487,15 @@ class PrebufferService {
     }
   }
 
-  static Future<String> _fetchText(String url, HttpClient client) async {
+  static Future<String> _fetchText(String url, HttpClient client,
+      [Map<String, String>? headers]) async {
     Object? last;
     for (var t = 0; t < 3; t++) {
       try {
         final req = await client.getUrl(Uri.parse(url));
-        req.headers.set(
-            HttpHeaders.userAgentHeader, 'Mozilla/5.0 (Linux; Android 12)');
+        for (final e in (headers ?? PlayHeaders.forUrl(url)).entries) {
+          req.headers.set(e.key, e.value);
+        }
         final resp = await req.close().timeout(const Duration(seconds: 20));
         if (resp.statusCode != HttpStatus.ok) {
           throw HttpException('HTTP ${resp.statusCode}');
@@ -508,18 +513,21 @@ class PrebufferService {
     throw last ?? Exception('清单下载失败');
   }
 
-  static Future<List<int>> _fetchBytes(String url, HttpClient client) async {
+  static Future<List<int>> _fetchBytes(String url, HttpClient client,
+      [Map<String, String>? headers]) async {
     Object? last;
     for (var t = 0; t < 5; t++) {
       try {
         final builder = BytesBuilder(copy: false);
         var got = 0;
+        final hdrs = headers ?? PlayHeaders.forUrl(url);
         // 该 CDN 对中插贴片等资源无条件回 206（但 Content-Range 常为全量），
         // 故接受 200/206；206 未拉齐时带 Range 从 got 处续拉
         for (var round = 0; round < 8; round++) {
           final req = await client.getUrl(Uri.parse(url));
-          req.headers.set(
-              HttpHeaders.userAgentHeader, 'Mozilla/5.0 (Linux; Android 12)');
+          for (final e in hdrs.entries) {
+            req.headers.set(e.key, e.value);
+          }
           if (got > 0) {
             req.headers.set(HttpHeaders.rangeHeader, 'bytes=$got-');
           }
@@ -574,8 +582,9 @@ class PrebufferService {
     IOSink? sink;
     try {
       final req = await client.getUrl(Uri.parse(url));
-      req.headers
-          .set(HttpHeaders.userAgentHeader, 'Mozilla/5.0 (Linux; Android 12)');
+      for (final e in PlayHeaders.forUrl(url).entries) {
+        req.headers.set(e.key, e.value);
+      }
       req.followRedirects = true;
       final resp = await req.close().timeout(const Duration(seconds: 20));
       if (resp.statusCode != HttpStatus.ok) {
