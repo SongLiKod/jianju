@@ -226,7 +226,6 @@ class _HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final seed = AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
     final wide = AppLayout.isWide(context);
 
     return Scaffold(
@@ -234,7 +233,7 @@ class _HomePageState extends State<HomePage>
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.play_circle_fill_rounded, color: seed, size: 22),
+            Image.asset('assets/icons/app_icon.png', width: 22, height: 22),
             const SizedBox(width: 6),
             const Text('简剧'),
           ],

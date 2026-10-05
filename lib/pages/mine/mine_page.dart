@@ -17,8 +17,6 @@ class MinePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final seed =
-        AppPalette.colors[context.watch<ThemeProvider>().colorIndex].color;
     final favCount = FavoriteService.favorites.length;
     final historyCount = HistoryService.history.length;
 
@@ -37,11 +35,10 @@ class MinePage extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
               child: Row(
                 children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: seed.withValues(alpha: 0.15),
-                    child: Icon(Icons.play_circle_fill_rounded,
-                        color: seed, size: 32),
+                  Image.asset(
+                    'assets/icons/app_icon.png',
+                    width: 56,
+                    height: 56,
                   ),
                   const SizedBox(width: 14),
                   Column(

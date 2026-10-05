@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../constants/app_constants.dart';
 import 'storage_service.dart';
+import 'tray_service.dart';
 
 /// Windows 桌面窗口管理
 ///
@@ -98,4 +99,16 @@ class WindowService with WindowListener {
 
   @override
   void onWindowMoved() => _scheduleSave();
+
+  /// 关闭按钮被拦截（托盘已启用）时，窗口收进托盘而不是退出
+  @override
+  void onWindowClose() async {
+    try {
+      if (await windowManager.isPreventClose()) {
+        await TrayService.instance.hideToTray();
+      }
+    } catch (e) {
+      debugPrint('[WIN] 关闭拦截处理失败: $e');
+    }
+  }
 }

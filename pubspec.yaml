@@ -54,6 +54,7 @@ dependencies:
   window_manager: ^0.4.3
   # 版本信息（关于页面）
   package_info_plus: ^8.3.0
+  tray_manager: ^0.5.3
 
 dev_dependencies:
   flutter_test:
@@ -76,6 +77,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # 应用内品牌图标（左上角 Logo、桌面托盘图标来源）
+  assets:
+    - assets/icons/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

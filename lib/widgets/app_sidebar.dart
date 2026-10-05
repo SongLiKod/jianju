@@ -46,29 +46,10 @@ class AppSidebar extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 18),
             child: Row(
               children: [
-                Container(
+                Image.asset(
+                  'assets/icons/app_icon.png',
                   width: 34,
                   height: 34,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        primaryColor,
-                        primaryColor.withValues(alpha: 0.72),
-                      ],
-                    ),
-                    borderRadius: BorderRadius.circular(11),
-                    boxShadow: [
-                      BoxShadow(
-                        color: primaryColor.withValues(alpha: 0.35),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child:
-                      const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 22),
                 ),
                 const SizedBox(width: 11),
                 Expanded(

@@ -8,6 +8,7 @@ import 'core/services/favorite_service.dart';
 import 'core/services/history_service.dart';
 import 'core/services/search_history_service.dart';
 import 'core/services/storage_service.dart';
+import 'core/services/tray_service.dart';
 import 'core/services/window_service.dart';
 import 'core/state/settings_provider.dart';
 import 'core/state/theme_provider.dart';
@@ -27,6 +28,9 @@ Future<void> main() async {
 
   // Windows 桌面窗口（标题 / 最小尺寸 / 恢复上次窗口位置，全屏播放依赖）
   await WindowService.init();
+
+  // 系统托盘（简剧图标 + 右键菜单，关闭窗口时收进托盘）
+  await TrayService.init();
 
   await DeviceService.init();
   FavoriteService.init();
