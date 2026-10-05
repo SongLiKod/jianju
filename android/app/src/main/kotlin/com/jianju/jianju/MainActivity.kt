@@ -128,7 +128,10 @@ class MainActivity : FlutterActivity() {
         if (!apk.isFile || apk.length() < 1024) {
             throw IllegalArgumentException("APK 文件无效")
         }
-        val installer = getSystemService(PackageInstaller::class.java)
+        // 用 PackageManager 直连系统服务：getSystemService(PackageInstaller::class.java)
+        // 走 SystemServiceRegistry 的 class 查表，部分 ROM（如 EMUI / Android 10）
+        // 没注册该 class，返回 null 后 createSession 直接 NPE（安装失败）
+        val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(
             PackageInstaller.SessionParams.MODE_FULL_INSTALL
         ).apply { setAppPackageName(packageName) }

@@ -116,5 +116,16 @@ void main() {
         '安装失败：something weird',
       );
     });
+
+    test('拿不到系统安装服务（createSession NPE）提示手动安装', () {
+      final s = UpdateService.humanizeInstallError(
+        "install：Attempt to invoke virtual method "
+        "'int android.content.pm.PackageInstaller.createSession("
+        "android.content.pm.PackageInstaller\$SessionParams)' "
+        'on a null object reference',
+      );
+      expect(s, contains('手动安装'));
+      expect(s, isNot(contains('null object')));
+    });
   });
 }
