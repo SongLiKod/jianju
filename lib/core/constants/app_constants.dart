@@ -25,6 +25,8 @@ class AppConstants {
   // 数据源
   static const String keyDataSource = 'settings.data_source'; // web/api52/line:<id>
   static const String keyApi52Key = 'settings.api52_key';
+  // 搜索
+  static const String keySearchLimit = 'settings.search_limit'; // 结果条数
   // 播放线路
   static const String keyPinnedLine = 'settings.pinned_line'; // ''=自动（最快）
   static const String keyPlayLineStats = 'local.play_line_stats'; // 线路测速统计 JSON
@@ -91,6 +93,12 @@ class AppConstants {
   // ==================== 搜索历史 ====================
   /// 搜索历史最多保留条数
   static const int maxSearchHistory = 20;
+
+  // ==================== 搜索结果 ====================
+  /// 跨站搜索合并后默认展示条数
+  static const int defaultSearchLimit = 10;
+  /// 搜索结果条数候选项（设置 → 搜索 → 搜索结果条数）
+  static const List<int> searchLimitOptions = [10, 20, 30, 50, 100];
 
   // ==================== 使用声明（关于页「使用声明」全文） ====================
   static const String usageStatement = '''

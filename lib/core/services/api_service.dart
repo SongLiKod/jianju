@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../constants/api_constants.dart';
@@ -156,12 +158,17 @@ class ApiService {
 
   // ==================== 搜索 ====================
 
-  /// 关键词搜索短剧。
+  /// 关键词搜索短剧（只查当前数据源，见 [searchAcross] 的跨站版本）。
   /// 官方网页搜索每页固定 10 条且分页参数不生效，仅返回首屏结果。
   static Future<List<Drama>> search({required String keyword}) async {
     final site = MaccmsSource.current();
     if (site != null) return site.search(keyword);
     if (Api52Source.enabled) return Api52Source.search(keyword);
+    return _searchOfficial(keyword);
+  }
+
+  /// 官方网页源搜索（首屏 10 条）
+  static Future<List<Drama>> _searchOfficial(String keyword) async {
     final loader = await HttpClient.getSsrJson(
       ApiConstants.pathSearch(keyword),
       loaderKeyPattern: r'search_',
@@ -175,6 +182,111 @@ class ApiService {
       final source = videoData is Map ? videoData : e;
       final d = Drama.fromJson(source);
       if (d != null) out.add(d);
+    }
+    return out;
+  }
+
+  /// 单站查询并发上限（站点多时避免同时打满全部源）
+  static const int _searchConcurrency = 8;
+
+  /// 单站查询超时：超时站点直接跳过，不拖累整体
+  static const Duration _searchPerSource = Duration(seconds: 10);
+
+  /// 整次跨站搜索总预算：到点即用已合并结果收尾
+  static const Duration _searchBudget = Duration(seconds: 20);
+
+  /// 跨站聚合搜索：当前数据源 + 官方网页源 + 52api（启用时）+ 全部 API 整站站点
+  ///
+  /// 各站并发查询，站点陆续返回时通过 [onUpdate] 吐出已合并结果
+  /// （参数为 合并结果 / 已完成站数 / 总站数），界面可边搜边展示；
+  /// 单站失败或超时只跳过该站。合并规则见 [mergeSearchResults]。
+  static Future<List<Drama>> searchAcross({
+    required String keyword,
+    required int limit,
+    void Function(List<Drama> merged, int done, int total)? onUpdate,
+  }) async {
+    final sources = _searchSources(keyword);
+    final total = sources.length;
+    final results = <int, List<Drama>>{};
+    var done = 0;
+    var closed = false;
+
+    void emit() {
+      onUpdate?.call(mergeSearchResults(results, limit), done, total);
+    }
+
+    var next = 0;
+    Future<void> runWorker() async {
+      while (true) {
+        if (closed) return;
+        final i = next++;
+        if (i >= sources.length) return;
+        final src = sources[i];
+        try {
+          final items = await src.run().timeout(_searchPerSource);
+          if (closed) return;
+          results[src.pri] = items;
+        } catch (_) {
+          // 单站无响应/超时/无结果：跳过，其余站点继续
+        }
+        if (closed) return;
+        done++;
+        emit();
+      }
+    }
+
+    try {
+      await Future.wait(
+              List.generate(_searchConcurrency, (_) => runWorker()))
+          .timeout(_searchBudget);
+    } on TimeoutException {
+      // 总预算耗尽：按已到手的结果收尾
+    }
+    closed = true;
+    emit();
+    return mergeSearchResults(results, limit);
+  }
+
+  /// 跨站搜索的查询目标与优先级（当前源最前，其次官方、52api，
+  /// 其余整站站点按历史测速排序）
+  static List<({int pri, Future<List<Drama>> Function() run})>
+      _searchSources(String keyword) {
+    final out = <({int pri, Future<List<Drama>> Function() run})>[];
+    var pri = 0;
+    final current = MaccmsSource.current();
+    if (current != null) {
+      final site = current;
+      out.add((pri: pri++, run: () => site.search(keyword)));
+    }
+    out.add((pri: pri++, run: () => _searchOfficial(keyword)));
+    if (Api52Source.enabled) {
+      out.add((pri: pri++, run: () => Api52Source.search(keyword)));
+    }
+    pri = 10;
+    final seen = {if (current != null) current.line.id};
+    for (final line in PlayLineResolver.orderedLines()) {
+      if (line.mode != PlayLineMode.api || seen.contains(line.id)) continue;
+      seen.add(line.id);
+      final site = MaccmsSource(line);
+      out.add((pri: pri++, run: () => site.search(keyword)));
+    }
+    return out;
+  }
+
+  /// 跨站结果合并：按来源优先级升序拼接，归一化剧名去重，截断到 [limit]
+  static List<Drama> mergeSearchResults(
+      Map<int, List<Drama>> byPriority, int limit) {
+    final keys = byPriority.keys.toList()..sort();
+    final out = <Drama>[];
+    final seen = <String>{};
+    for (final k in keys) {
+      for (final d in byPriority[k]!) {
+        final t = PlayLineResolver.normalizeTitle(d.title);
+        final key = t.isEmpty ? d.bookId : t;
+        if (!seen.add(key)) continue;
+        out.add(d);
+        if (limit > 0 && out.length >= limit) return out;
+      }
     }
     return out;
   }

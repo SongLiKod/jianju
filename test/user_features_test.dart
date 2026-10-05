@@ -76,6 +76,28 @@ void main() {
     });
   });
 
+  // ==================== 搜索结果条数 ====================
+
+  group('搜索结果条数', () {
+    test('默认 10 条，修改后立即生效并持久化', () async {
+      final p = SettingsProvider()..load();
+      expect(p.searchLimit, AppConstants.defaultSearchLimit);
+      expect(p.searchLimit, 10);
+
+      await p.setSearchLimit(30);
+      expect(p.searchLimit, 30);
+      final fresh = SettingsProvider()..load();
+      expect(fresh.searchLimit, 30);
+    });
+
+    test('非法存储值回退默认（不在候选项里）', () async {
+      await SettingsService.setSearchLimit(99);
+      expect(SettingsService.searchLimit, AppConstants.defaultSearchLimit);
+      await SettingsService.setSearchLimit(10);
+      expect(SettingsService.searchLimit, 10);
+    });
+  });
+
   // ==================== 观看历史管理 ====================
 
   group('观看历史管理', () {

@@ -82,6 +82,19 @@ class SettingsService {
   static Future<void> setSlimProgress(bool v) =>
       _setBool(AppConstants.keySlimProgress, v);
 
+  // ==================== 搜索 ====================
+  /// 跨站搜索合并后展示的条数（默认 10 条）
+  static int get searchLimit {
+    final v = int.tryParse(StorageService.getString(AppConstants.keySearchLimit));
+    if (v == null || !AppConstants.searchLimitOptions.contains(v)) {
+      return AppConstants.defaultSearchLimit;
+    }
+    return v;
+  }
+
+  static Future<void> setSearchLimit(int v) =>
+      StorageService.setString(AppConstants.keySearchLimit, '$v');
+
   // ==================== 数据源 ====================
   /// 数据源：`web` 官方网页源 / `api52` 第三方红果聚合源 /
   /// `line:<线路id>` 整站数据源（该站的首页/分类/搜索/详情/播放全部数据）

@@ -21,7 +21,9 @@ import '../../widgets/update_flow.dart';
 ///
 /// 1. 主题设置区域：明暗模式切换 + 自定义APP主题主色选择
 /// 2. 播放器全局默认配置区域：默认播放倍速 0.75x ~ 5x
-/// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置 + 整站站点列表
+/// 2.5 搜索区域：跨站搜索结果条数
+/// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置
+/// 3.5 整站站点区域：站点列表（默认折叠，可筛选）+ 自定义站点
 /// 4. 缓存管理区域：查看/一键清除图片缓存
 /// 5. 账号与设备区域：重置设备 ID / 退出登录（清除token）
 /// 6. 关于页面区域：项目版本信息 + 检查更新 + 使用声明
@@ -36,12 +38,25 @@ class _SettingsPageState extends State<SettingsPage> {
   String _cacheSize = '计算中...';
   String _version = '';
 
+  /// 整站站点列表是否展开（站点数量多，默认折叠避免占满设置页）
+  bool _sitesExpanded = false;
+
+  /// 站点筛选关键词与输入框
+  String _siteFilter = '';
+  final TextEditingController _siteFilterCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     debugPrint('[NAV] settings.init');
     _loadCacheSize();
     _loadVersion();
+  }
+
+  @override
+  void dispose() {
+    _siteFilterCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadCacheSize() async {
@@ -52,9 +67,14 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _loadVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    if (!mounted) return;
-    setState(() => _version = info.version);
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _version = info.version);
+    } catch (e) {
+      // 平台通道不可用（如测试环境）：版本留空即可
+      debugPrint('[NAV] package info failed: $e');
+    }
   }
 
   Future<void> _clearCache() async {
@@ -308,6 +328,36 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
 
+          // ==================== 2.5 搜索区域 ====================
+          _sectionTitle('搜索'),
+          _groupContainer(
+            isDark,
+            children: [
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.manage_search_outlined,
+                    color: outline, size: 22),
+                title: const Text('搜索结果条数',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('跨站搜索全部站点，去重合并后最多展示的条数',
+                    style: TextStyle(fontSize: 12, color: outline)),
+                trailing: _chip('${settings.searchLimit} 条', seed, true),
+                onTap: () async {
+                  final provider = context.read<SettingsProvider>();
+                  final v = await _pickInt(
+                    '搜索结果条数',
+                    AppConstants.searchLimitOptions,
+                    settings.searchLimit,
+                    (n) => '$n 条',
+                    seed,
+                  );
+                  if (v != null) provider.setSearchLimit(v);
+                },
+              ),
+            ],
+          ),
+
           // ==================== 3. 数据源区域 ====================
           _sectionTitle('数据源'),
           _groupContainer(
@@ -365,54 +415,12 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
 
           // ==================== 3.5 整站站点（maccms API 站 + 自定义） ====================
-          _sectionTitle('整站站点'),
-          _groupContainer(
-            isDark,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-                child: Text(
-                  '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站点'
-                  '（标准 maccms 接口站可自定义添加）',
-                  style: TextStyle(fontSize: 12, color: outline, height: 1.4),
-                ),
-              ),
-              const Divider(indent: 16),
-              ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                leading:
-                    Icon(Icons.add_circle_outline_rounded, color: seed, size: 22),
-                title: Text('添加自定义站点',
-                    style: TextStyle(
-                        fontSize: 15,
-                        color: seed,
-                        fontWeight: FontWeight.w600)),
-                subtitle: Text('标准 maccms 接口站 / 网页解析站，自动检测可用性',
-                    style: TextStyle(fontSize: 12, color: outline)),
-                onTap: _addCustomSite,
-              ),
-              for (final line in PlayLineResolver.allLines)
-                if (!line.isCustom && line.mode == PlayLineMode.api) ...[
-                  const Divider(indent: 16),
-                  _sourceTile(
-                    context,
-                    icon: Icons.dns_outlined,
-                    label: line.name,
-                    desc: '整站数据源 · 首页/搜索/详情/播放全走该站',
-                    selected: settings.dataSource ==
-                        AppConstants.dataSourceOfLine(line.id),
-                    seed: seed,
-                    onTap: () => context
-                        .read<SettingsProvider>()
-                        .setDataSource(AppConstants.dataSourceOfLine(line.id)),
-                  ),
-                ],
-              for (final line in PlayLineResolver.customLines) ...[
-                const Divider(indent: 16),
-                _customLineTile(context, line, settings, seed, outline),
-              ],
-            ],
+          ..._sitesSection(
+            context: context,
+            settings: settings,
+            isDark: isDark,
+            seed: seed,
+            outline: outline,
           ),
 
           // ==================== 4. 缓存管理区域 ====================
@@ -609,7 +617,14 @@ class _SettingsPageState extends State<SettingsPage> {
           color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: child ?? Column(children: children),
+        // 组内所有 ListTile 的墨水波纹/选中态都要画在本组的底色之上，
+        // 否则会被外层有色 DecoratedBox 盖住（Flutter 调试断言同样会报）
+        child: Material(
+          type: MaterialType.transparency,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: child ?? Column(children: children),
+        ),
       ),
     );
   }
@@ -852,6 +867,193 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         );
       },
+    );
+  }
+
+  // ==================== 整站站点 ====================
+
+  /// 整站站点分组。
+  ///
+  /// 站点会越加越多，全量平铺会把设置页撑得很长，因此默认折叠：
+  /// 只显示当前站点 + 站点总数，点开后才列全部站点，并提供名称/域名筛选。
+  List<Widget> _sitesSection({
+    required BuildContext context,
+    required SettingsProvider settings,
+    required bool isDark,
+    required Color seed,
+    required Color outline,
+  }) {
+    final builtin = [
+      for (final line in PlayLineResolver.allLines)
+        if (!line.isCustom && line.mode == PlayLineMode.api) line,
+    ];
+    final custom = PlayLineResolver.customLines;
+    final q = _siteFilter.trim().toLowerCase();
+    bool match(PlayLine line) =>
+        q.isEmpty ||
+        line.name.toLowerCase().contains(q) ||
+        line.base.toLowerCase().contains(q);
+    final shownBuiltin = [for (final l in builtin) if (match(l)) l];
+    final shownCustom = [for (final l in custom) if (match(l)) l];
+    final total = builtin.length + custom.length;
+
+    // 当前选中的整站站点（未选整站源时按数据源名展示）
+    final lineId = AppConstants.dataSourceLineId(settings.dataSource);
+    final current = lineId.isEmpty ? null : PlayLineResolver.byId(lineId);
+    final currentLabel = current?.name ??
+        (settings.dataSource == AppConstants.dataSourceApi52
+            ? '52api 红果源'
+            : '官方网页源');
+
+    return [
+      _sectionTitle('整站站点'),
+      _groupContainer(
+        isDark,
+        children: [
+          if (!_sitesExpanded) ...[
+            ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              leading: Icon(Icons.dns_outlined,
+                  size: 22, color: current != null ? seed : outline),
+              title: Text(
+                '当前站点：$currentLabel',
+                style: TextStyle(
+                    fontSize: 15,
+                    color: current != null ? seed : null,
+                    fontWeight:
+                        current != null ? FontWeight.w600 : FontWeight.w400),
+              ),
+              subtitle: Text(
+                '共 $total 个站点（内置 ${builtin.length} · 自定义 ${custom.length}）· 点击展开选择',
+                style: TextStyle(fontSize: 12, color: outline),
+              ),
+              trailing: Icon(Icons.unfold_more_rounded,
+                  size: 20, color: outline.withValues(alpha: 0.6)),
+              onTap: () => setState(() => _sitesExpanded = true),
+            ),
+            const Divider(indent: 16),
+            _addSiteTile(seed, outline),
+          ] else ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+              child: Text(
+                '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站点'
+                '（标准 maccms 接口站可自定义添加）',
+                style: TextStyle(fontSize: 12, color: outline, height: 1.4),
+              ),
+            ),
+            _addSiteTile(seed, outline),
+            if (total > 10) _siteFilterField(seed, outline),
+            for (final line in shownBuiltin) ...[
+              const Divider(indent: 16),
+              _sourceTile(
+                context,
+                icon: Icons.dns_outlined,
+                label: line.name,
+                desc: '整站数据源 · 首页/搜索/详情/播放全走该站',
+                selected: settings.dataSource ==
+                    AppConstants.dataSourceOfLine(line.id),
+                seed: seed,
+                onTap: () => context
+                    .read<SettingsProvider>()
+                    .setDataSource(AppConstants.dataSourceOfLine(line.id)),
+              ),
+            ],
+            for (final line in shownCustom) ...[
+              const Divider(indent: 16),
+              _customLineTile(context, line, settings, seed, outline),
+            ],
+            if (shownBuiltin.isEmpty && shownCustom.isEmpty) ...[
+              const Divider(indent: 16),
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: Icon(Icons.search_off_rounded,
+                    size: 22, color: outline.withValues(alpha: 0.6)),
+                title: Text('没有匹配「$_siteFilter」的站点',
+                    style: TextStyle(fontSize: 14, color: outline)),
+              ),
+            ],
+            const Divider(indent: 16),
+            ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              leading: Icon(Icons.unfold_less_rounded,
+                  size: 22, color: outline.withValues(alpha: 0.7)),
+              title: Text('收起站点列表',
+                  style: TextStyle(
+                      fontSize: 15,
+                      color: seed,
+                      fontWeight: FontWeight.w600)),
+              subtitle: Text('共 $total 个站点',
+                  style: TextStyle(fontSize: 12, color: outline)),
+              onTap: () => setState(() {
+                _sitesExpanded = false;
+                _siteFilter = '';
+                _siteFilterCtrl.clear();
+              }),
+            ),
+          ],
+        ],
+      ),
+    ];
+  }
+
+  /// 添加自定义站点入口（折叠/展开均可见）
+  Widget _addSiteTile(Color seed, Color outline) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      leading: Icon(Icons.add_circle_outline_rounded, color: seed, size: 22),
+      title: Text('添加自定义站点',
+          style: TextStyle(
+              fontSize: 15, color: seed, fontWeight: FontWeight.w600)),
+      subtitle: Text('标准 maccms 接口站 / 网页解析站，自动检测可用性',
+          style: TextStyle(fontSize: 12, color: outline)),
+      onTap: _addCustomSite,
+    );
+  }
+
+  /// 站点筛选输入框（站点多时按名称/域名过滤）
+  Widget _siteFilterField(Color seed, Color outline) {
+    final border = outline.withValues(alpha: 0.35);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: TextField(
+        controller: _siteFilterCtrl,
+        onChanged: (v) => setState(() => _siteFilter = v),
+        style: const TextStyle(fontSize: 14),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: '筛选站点名称 / 域名',
+          hintStyle: TextStyle(fontSize: 13, color: outline.withValues(alpha: 0.6)),
+          prefixIcon:
+              Icon(Icons.search_rounded, size: 18, color: outline),
+          prefixIconConstraints:
+              const BoxConstraints(minWidth: 34, minHeight: 18),
+          suffixIcon: _siteFilter.isEmpty
+              ? null
+              : IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.cancel_rounded,
+                      size: 16, color: outline.withValues(alpha: 0.5)),
+                  onPressed: () {
+                    _siteFilterCtrl.clear();
+                    setState(() => _siteFilter = '');
+                  },
+                ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: seed),
+          ),
+        ),
+      ),
     );
   }
 
