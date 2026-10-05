@@ -24,7 +24,7 @@ import '../../core/theme/responsive.dart';
 
 /// 播放模块（核心）
 ///
-/// 1. 播放直链：前 3 集官方 MP4 直链，其余集数由内置线路（20 条）按测速竞速兜底
+/// 1. 播放直链：前 3 集官方 MP4 直链，其余集数由内置线路（30 条）按测速竞速兜底
 /// 2. 倍速 0.75x ~ 5x（默认值读取设置页全局配置）
 /// 3. 进度拖拽 + 进度记忆、全屏播放、音量调节
 /// 4. 播放线路：默认自动选最快，可手动锁定任意一条
@@ -1252,7 +1252,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   // ==================== 播放线路 ====================
 
-  /// 线路选择：首项为“自动（最快）”，其余为内置 20 条线路，可手动锁定
+  /// 线路选择：首项为“自动（最快）”，其余为内置 30 条线路，可手动锁定
   Future<void> _showLineSheet() async {
     debugPrint('[UI] lineSheet.show');
     _showControls();
