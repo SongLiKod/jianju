@@ -377,6 +377,7 @@ class PrebufferService {
 
         // 解析：header（首个分片前的标签）+ 有序条目（pre 标签/EXTINF/
         // mid 标签/绝对 URL）+ tail（末尾标签如 ENDLIST）
+        final base = Uri.parse(listUrl);
         final header = <String>[];
         final entries = <_PlEntry>[];
         var pre = <String>[];
@@ -386,18 +387,22 @@ class PrebufferService {
           final l = raw.trim();
           if (l.isEmpty) continue;
           if (l.startsWith('#')) {
-            if (l.toUpperCase().startsWith('#EXTINF')) {
+            // 标签里的相对 URI 全部转绝对：改写后的清单落在本地文件，
+            // mpv 按 file:// 解析相对地址（`/key.key` 会指到盘符根目录），
+            // AES 流取不到密钥即起播失败
+            final t = absolutizeTag(l, base);
+            if (t.toUpperCase().startsWith('#EXTINF')) {
               if (extinf == null) {
-                extinf = l;
+                extinf = t;
               } else {
-                pre.add(l);
+                pre.add(t);
               }
             } else if (extinf == null && entries.isEmpty) {
-              header.add(l);
+              header.add(t);
             } else if (extinf == null) {
-              pre.add(l); // 新分片的前导标签（#EXT-X-DISCONTINUITY 等）
+              pre.add(t); // 新分片的前导标签（#EXT-X-DISCONTINUITY 等）
             } else {
-              mid.add(l); // EXTINF 之后、分片行之前的标签
+              mid.add(t); // EXTINF 之后、分片行之前的标签
             }
             continue;
           }
@@ -405,7 +410,7 @@ class PrebufferService {
             pre: pre,
             extinf: extinf ?? '',
             mid: mid,
-            url: Uri.parse(listUrl).resolve(l).toString(),
+            url: base.resolve(l).toString(),
           ));
           pre = <String>[];
           extinf = null;
@@ -485,6 +490,25 @@ class PrebufferService {
       debugPrint('[PBF] 清单改写失败（原样起播）: $e');
       return null;
     }
+  }
+
+  /// 标签内 `URI="..."` 相对地址按 [base] 转绝对（#EXT-X-KEY/#EXT-X-MAP 等）
+  ///
+  /// 改写清单会写到本地文件再交给 mpv，本地清单里的相对/根相对 URI 会被
+  /// 按 `file://` 解析（`/key.key` → 盘符根目录），AES 加密流因此取不到
+  /// 密钥而起播失败；分片行在解析时已同样转绝对。
+  @visibleForTesting
+  static String absolutizeTag(String tag, Uri base) {
+    if (!tag.contains('URI="')) return tag;
+    return tag.replaceAllMapped(RegExp(r'URI="([^"]*)"'), (m) {
+      final raw = m.group(1)!;
+      if (raw.isEmpty) return m.group(0)!;
+      try {
+        return 'URI="${base.resolve(raw)}"';
+      } catch (_) {
+        return m.group(0)!;
+      }
+    });
   }
 
   static Future<String> _fetchText(String url, HttpClient client,

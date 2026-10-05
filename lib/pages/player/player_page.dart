@@ -91,6 +91,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// open 流程收尾时再触发自动换线，避免错误被 _loading 门槛吞掉
   String? _pendingOpenError;
 
+  /// 本次起播是否用了本地改写清单（剔广告）：起播失败可回退原始网络流
+  bool _playedRewritten = false;
+
+  /// 已回退过一次（改写清单 → 原始网络流），防反复套娃
+  bool _rewrittenRetried = false;
+
   // ==================== 预载下一集 ====================
   bool _preloadStarted = false;
   bool _preloadReady = false;
@@ -203,8 +209,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         if (e.isEmpty || !mounted) return;
         // 起播即打不开：多半是 CDN 防盗链（403）或地址已失效——排除该地址
         // 自动换线重解析，仍打不开才转错误页。加载期（含 seek 等待）收到的
-        // 先挂起，open 流程收尾时再处理，避免错误被 _loading 门槛吞掉
-        if (RegExp(r'failed to open', caseSensitive: false).hasMatch(e)) {
+        // 先挂起，open 流程收尾时再处理，避免错误被 _loading 门槛吞掉。
+        // 「Failed to recognize file format」= 打开成功但内容不是可识别媒体
+        // （直链回 HTML、本地改写清单缺密钥取不到明文等），同样按起播失败处理
+        if (RegExp(r'failed to open|failed to recognize file format',
+                caseSensitive: false)
+            .hasMatch(e)) {
           debugPrint('[EP] player open failed: $e (loading=$_loading)');
           PipService.setActive(false);
           if (_loading) {
@@ -257,6 +267,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 转错误页，并用与播放器一致的请求头自检一次，把原因（403 防盗链/
   /// 地址失效/网络不通）补进错误文案，便于判断该换线路还是该检查网络
   Future<void> _onOpenFailed(String e) async {
+    // 本地改写清单（剔广告）起播失败：清单里取不到密钥/内容不可识别时，
+    // 已验证的原始网络流可以直起——先回退它重试一次，不计入换线预算
+    if (_playedRewritten && !_rewrittenRetried) {
+      _rewrittenRetried = true;
+      debugPrint('[EP] 改写清单起播失败，回退原始网络流重试: $e');
+      await _openEpisode(_episode, resumeAt: _position, noRewrite: true);
+      return;
+    }
     final seq = _openSeq;
     final url = _lastPlayUrl;
     final canRetry = url != null &&
@@ -630,12 +648,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     Duration? resumeAt,
     String? localPath,
     String? excludeUrl,
+    bool noRewrite = false,
   }) async {
     if (!mounted) return;
     debugPrint('[EP] open #${episode.index} resume=$resumeSaved'
         '${localPath != null ? ' local=1' : ''}'
         '${presetUrl != null ? ' preset=1' : ''}'
         '${excludeUrl != null ? ' exclude=1' : ''}'
+        '${noRewrite ? ' noRewrite=1' : ''}'
         '${resumeAt != null ? ' at=${_fmt(resumeAt)}' : ''}');
     final seq = ++_openSeq;
     _endHandled = false;
@@ -643,6 +663,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (excludeUrl == null) {
       _openFails = 0;
       _openAutoTries = 0;
+      _rewrittenRetried = false;
     }
     _pendingOpenError = null; // 上一集挂起的加载期错误不再追责
     PipService.setActive(false); // 解析/换集期间不满足自动小窗条件
@@ -711,8 +732,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // 网络流先改写为去广告清单：中插广告段会让 mpv 把流重启回 00:00
       // （"跳回开始播放"死循环，实测自然播放/seek 进广告段必触发）。
       // 本地 .ts/.mp4 及无广告清单会返回 null，原样起播。
-      final rewritten = await PrebufferService.rewritePlaylist(playUrl);
+      final rewritten = noRewrite
+          ? null
+          : await PrebufferService.rewritePlaylist(playUrl);
       if (!mounted || seq != _openSeq) return;
+      _playedRewritten = rewritten != null;
       // 浏览器请求头（UA + 来源 Referer）：CDN 防盗链时 mpv 裸连会被 403
       // 拒绝，表现为「播放出错：Failed to open <m3u8>」。清单改写成文件时
       // 头按本地清单登记，供 mpv 拉分片时同样带上
