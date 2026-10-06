@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 网络访问（对接红果 API 与视频 CDN） -->
+    <!-- 网络访问（对接数据源 API 与视频 CDN） -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 应用内检查更新：下载新版本后交系统安装（确认框浮在本应用上） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>

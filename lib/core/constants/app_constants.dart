@@ -22,6 +22,8 @@ class AppConstants {
   static const String keyPreloadLead = 'settings.preload_lead_sec';
   static const String keyBufferSecs = 'settings.buffer_secs';
   static const String keySlimProgress = 'settings.slim_progress';
+  // 清晰度（详见 docs/简剧 - 清晰度增强方案.md）
+  static const String keyLineQualityFirst = 'settings.line_quality_first';
   // 数据源
   static const String keyDataSource = 'settings.data_source'; // web/api52/line:<id>
   static const String keyApi52Key = 'settings.api52_key';
@@ -35,7 +37,7 @@ class AppConstants {
   // ==================== 数据源 ====================
   /// 数据源：官方网页源（默认，前 3 集可播）
   static const String dataSourceWeb = 'web';
-  /// 数据源：52api 红果源（全集，需 apikey）
+  /// 数据源：52api 聚合源（全集，需 apikey）
   static const String dataSourceApi52 = 'api52';
 
   /// 数据源前缀：整站数据源（`line:<线路id>`，首页/分类/搜索/详情/播放全走该站）
@@ -89,6 +91,16 @@ class AppConstants {
   static const List<int> bufferOptions = [10, 20, 60, 180];
   /// 底部细进度条默认开启
   static const bool defaultSlimProgress = true;
+
+  // ==================== 清晰度（路径 A） ====================
+  /// 路径 A：清晰度优先选线路（后台探测各线路码率，播放时按码率排序）
+  static const bool defaultLineQualityFirst = true;
+  /// 未探测到码率的线路在排序中的占位值（kbps）。
+  /// 实测各源码率 469~1102，取中位偏上：首播全部未知时彼此相等，
+  /// 退化为纯耗时排序（与未开启本功能时行为一致）。
+  static const int unknownBitrateKbps = 800;
+  /// 码率探测结果的持久化 key（线路统计 JSON 内，单位 kbps，0=探测失败）
+  static const String statBitrateKey = 'br';
 
   // ==================== 搜索历史 ====================
   /// 搜索历史最多保留条数

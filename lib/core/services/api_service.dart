@@ -12,14 +12,14 @@ import 'maccms_source.dart';
 import 'play_lines.dart';
 import 'settings_service.dart';
 
-/// 红果短剧官方网页源业务 API：首页信息流 / 搜索 / 详情 / 播放源
+/// 短剧官方网页源业务 API：首页信息流 / 搜索 / 详情 / 播放源
 ///
 /// 数据源为 hongguoduanju.com 官方网页 SSR 数据（window._ROUTER_DATA）。
 /// 官方硬限制：每部剧仅前 [ApiConstants.accessibleEpisodeCount] 集可播。
 ///
 /// 分派规则（见 [SettingsService.dataSource]）：
 /// - `line:<id>`：首页/分类/榜单/搜索/详情/播放全部走该 maccms 站点
-/// - `api52`：搜索/详情/播放走第三方红果聚合源，信息流/分类/榜单仍走官方
+/// - `api52`：搜索/详情/播放走第三方聚合源，信息流/分类/榜单仍走官方
 /// - `web`：全部走官方网页源
 /// - 详情/播放按 ID 前缀（`mg:`/`a52:`）分派，切源后已打开的页面仍可用
 class ApiService {
@@ -393,7 +393,7 @@ class ApiService {
         }
       }
     }
-    // 第三方红果聚合源分集
+    // 第三方聚合源分集
     if (Api52Source.hasPrefix(vid)) {
       final url = await Api52Source.play(vid);
       if (url != excludeUrl) return url;

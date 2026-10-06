@@ -15,7 +15,7 @@ import 'core/state/theme_provider.dart';
 
 /// 简剧 - 纯净短剧客户端（学习研究项目）
 ///
-/// 对接红果短剧私有 API，客户端本地过滤全部广告，
+/// 对接短剧官方私有 API，客户端本地过滤全部广告，
 /// 双端（Android + Windows）统一 UI。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

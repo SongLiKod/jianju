@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../constants/api_constants.dart';
 import '../constants/app_constants.dart';
+import 'line_quality.dart';
 import 'play_headers.dart';
 import 'settings_service.dart';
 import 'storage_service.dart';
@@ -77,7 +78,7 @@ const List<PlayLine> kPlayLines = [
   PlayLine(id: 'bcvod.one', name: 'bcvod.one', base: 'https://bcvod.one', mode: PlayLineMode.html),
 ];
 
-/// 单条线路的测速统计（EMA 平均耗时 + 成功/连续失败次数）
+/// 单条线路的测速统计（EMA 平均耗时 + 成功/连续失败次数 + 码率）
 class PlayLineStat {
   /// 平均解析耗时（毫秒），null 表示尚无成功样本
   final double? emaMs;
@@ -88,7 +89,14 @@ class PlayLineStat {
   /// 连续失败次数（成功即清零）
   final int fails;
 
-  const PlayLineStat({this.emaMs, this.ok = 0, this.fails = 0});
+  /// 该线路播放直链的首片码率（kbps）。null=尚未探测，
+  /// 0=已探测但失败（不重试，避免打爆站点）
+  final int? bitrateKbps;
+
+  const PlayLineStat({this.emaMs, this.ok = 0, this.fails = 0, this.bitrateKbps});
+
+  /// 是否已有可信码率样本（>0）
+  bool get hasBitrate => bitrateKbps != null && bitrateKbps! > 0;
 }
 
 class _Win {
@@ -313,11 +321,75 @@ class PlayLineResolver {
   static PlayLineStat statOf(String id) {
     final s = _stats()[id];
     if (s is! Map) return const PlayLineStat();
+    final br = s[AppConstants.statBitrateKey];
     return PlayLineStat(
       emaMs: (s['ema'] as num?)?.toDouble(),
       ok: (s['ok'] as num?)?.toInt() ?? 0,
       fails: (s['fail'] as num?)?.toInt() ?? 0,
+      bitrateKbps: br is num ? br.toInt() : null,
     );
+  }
+
+  // ==================== 清晰度优先选线（路径 A） ====================
+
+  /// 播放用的线路顺序。
+  ///
+  /// 关闭「清晰度优先」时与 [orderedLines] 完全一致（耗时优先）；
+  /// 开启时先按码率降序、再按耗时升序——只影响播放取链，
+  /// 不影响跨站搜索的站点优先级（那里仍用 [orderedLines]）。
+  static List<PlayLine> orderedLinesForPlay() {
+    if (!_qualityFirst()) return orderedLines();
+    final list = allLines;
+    list.sort((a, b) {
+      final c = _bitrateOf(b).compareTo(_bitrateOf(a)); // 码率高者在前
+      if (c != 0) return c;
+      return scoreOf(a).compareTo(scoreOf(b)); // 同码率/未知再比耗时
+    });
+    return list;
+  }
+
+  /// 排序用码率：有可信样本用样本；否则用占位值。
+  /// 连续失败 ≥2 的线路直接降级为占位值——它已经证明不稳，
+  /// 即便历史码率高也不该继续抢在前面。
+  static int _bitrateOf(PlayLine line) {
+    final st = statOf(line.id);
+    if (!st.hasBitrate || st.fails >= 2) {
+      return AppConstants.unknownBitrateKbps;
+    }
+    return st.bitrateKbps!;
+  }
+
+  static bool _qualityFirst() {
+    try {
+      return SettingsService.lineQualityFirst;
+    } catch (_) {
+      return AppConstants.defaultLineQualityFirst;
+    }
+  }
+
+  /// 起播成功后后台探测该直链码率并落盘（仅在开关打开且该线路未测过时）。
+  /// 失败记 0，之后不再重试。
+  static void _probeBitrate(PlayLine line, String url) {
+    if (!_qualityFirst()) return;
+    final cur = statOf(line.id);
+    if (cur.bitrateKbps != null) return; // 已测过（含失败样本）
+    LineQuality.probeInBackground(
+      url,
+      headers: PlayHeaders.forUrl(url),
+      onResult: (kbps) => _recordBitrate(line, kbps),
+    );
+  }
+
+  static void _recordBitrate(PlayLine line, int? kbps) {
+    final stats = _stats();
+    final prev = stats[line.id];
+    final cur = prev is Map
+        ? Map<String, dynamic>.from(prev)
+        : <String, dynamic>{};
+    cur[AppConstants.statBitrateKey] = kbps ?? 0;
+    stats[line.id] = cur;
+    debugPlayLine('码率 ${line.id} -> ${kbps ?? '探测失败'} kbps');
+    _persistStats();
   }
 
   // ==================== 入口 ====================
@@ -353,7 +425,7 @@ class PlayLineResolver {
       }
     }
 
-    final lines = orderedLines();
+    final lines = orderedLinesForPlay();
     try {
       final win = await _raceBatches(lines, title, episodeIndex, exclude)
           .timeout(_totalBudget);
@@ -473,6 +545,9 @@ class PlayLineResolver {
 
     // 登记来源站点：播放器/预缓存请求该直链时补 Referer（防盗链）
     PlayHeaders.register(url, referer: '${line.base}/');
+
+    // 清晰度优先（路径 A）：后台测一次该线路的首片码率，供下次排序用
+    _probeBitrate(line, url);
 
     if (_cache.length >= _maxCache) _cache.clear();
     _cache[key] = url;

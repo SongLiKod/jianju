@@ -212,7 +212,7 @@ Release 资产命名：
 | 数据源 | 说明 | 代码 |
 | --- | --- | --- |
 | 官方网页源 | 抓取短剧站页面接口（`webBase` 等地址） | `services/maccms_source.dart` / `api_service.dart` |
-| 52api 红果源 | 需填 `apikey` 的聚合接口 | `services/api52_source.dart` |
+| 52api 聚合源 | 需填 `apikey` 的聚合接口 | `services/api52_source.dart` |
 | 整站数据源 | `type=maccms` 站点：首页、搜索、详情、播放全走其公开线路 | `services/play_lines.dart` |
 
 - 所有接口地址、路径、分类/榜单映射集中在 `lib/core/constants/api_constants.dart`，改地址只需改这一处。

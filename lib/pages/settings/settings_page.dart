@@ -22,7 +22,7 @@ import '../../widgets/update_flow.dart';
 /// 1. 主题设置区域：明暗模式切换 + 自定义APP主题主色选择
 /// 2. 播放器全局默认配置区域：默认播放倍速 0.75x ~ 5x
 /// 2.5 搜索区域：跨站搜索结果条数
-/// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置
+/// 3. 数据源区域：官方网页源 / 52api 聚合源切换 + apikey 配置
 /// 3.5 整站站点区域：站点列表（默认折叠，可筛选）+ 自定义站点
 /// 4. 缓存管理区域：查看/一键清除图片缓存
 /// 5. 账号与设备区域：重置设备 ID / 退出登录（清除token）
@@ -248,6 +248,27 @@ class _SettingsPageState extends State<SettingsPage> {
                 },
               ),
               const Divider(indent: 16),
+              // 路径 A：后台测各线路首片码率，播放时按码率优先取链
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary: Icon(Icons.cell_tower_rounded,
+                    color: outline, size: 22),
+                title: const Text('清晰度优先选线路',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  '启动后台探测各站点的视频码率（kbps），'
+                  '播放时先取码率高的线路，再比速度；'
+                  '跨站搜索的排序不受影响',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                value: settings.lineQualityFirst,
+                onChanged: (v) =>
+                    context.read<SettingsProvider>().setLineQualityFirst(v),
+              ),
+              // 路径 B（高画质渲染）已移除：mpv 在部分 Mali GPU 上
+              // 只要改缩放算法就黑屏（mpv-android#392，P30 Pro 实测复现）
+              const Divider(indent: 16),
               // 预载下一集：本集结尾前提前解析下一集，换集秒开不黑屏
               SwitchListTile(
                 contentPadding:
@@ -367,7 +388,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 context,
                 icon: Icons.language_rounded,
                 label: '官方网页源',
-                desc: '红果官网 · 免配置 · 前 3 集可播',
+                    desc: '官方网页源 · 免配置 · 前 3 集可播',
                 selected:
                     settings.dataSource == AppConstants.dataSourceWeb,
                 seed: seed,
@@ -379,7 +400,7 @@ class _SettingsPageState extends State<SettingsPage> {
               _sourceTile(
                 context,
                 icon: Icons.cloud_outlined,
-                label: '52api 红果源',
+                label: '52api 聚合源',
                 desc: '全集可播 · 需 apikey',
                 selected:
                     settings.dataSource == AppConstants.dataSourceApi52,
@@ -404,7 +425,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 subtitle: Text(
                   settings.hasApi52Key
                       ? '已配置 ${_maskKey(settings.apiKey52)}'
-                      : '未配置（52api.cn 注册开通红果接口）',
+                      : '未配置（52api.cn 注册开通聚合接口）',
                   style: TextStyle(fontSize: 12, color: outline),
                 ),
                 trailing: Icon(Icons.edit_outlined,
@@ -902,7 +923,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final current = lineId.isEmpty ? null : PlayLineResolver.byId(lineId);
     final currentLabel = current?.name ??
         (settings.dataSource == AppConstants.dataSourceApi52
-            ? '52api 红果源'
+            ? '52api 聚合源'
             : '官方网页源');
 
     return [
@@ -1329,7 +1350,7 @@ class _SettingsPageState extends State<SettingsPage> {
           autofocus: true,
           maxLines: 1,
           decoration: const InputDecoration(
-            hintText: '粘贴 apikey（52api.cn 开通红果接口后获取）',
+            hintText: '粘贴 apikey（52api.cn 开通聚合接口后获取）',
             helperText: '留空保存即清除',
             isDense: true,
           ),

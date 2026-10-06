@@ -7,7 +7,7 @@ import '../models/drama.dart';
 import '../models/episode.dart';
 import 'settings_service.dart';
 
-/// 第三方红果聚合 API 数据源（52api 等，`AppConstants.api52BaseUrl`）
+/// 第三方聚合 API 数据源（52api 等，`AppConstants.api52BaseUrl`）
 ///
 /// 仅承担 搜索 / 详情 / 播放取链；首页信息流、分类、榜单仍走官方网页源
 /// （第三方聚合接口目录与榜单形态未知，先保证用户最核心的“找剧→看剧”链路）。

@@ -14,6 +14,7 @@ class SettingsProvider extends ChangeNotifier {
   int _bufferSecs = AppConstants.defaultBufferSecs;
   bool _slimProgress = AppConstants.defaultSlimProgress;
   int _searchLimit = AppConstants.defaultSearchLimit;
+  bool _lineQualityFirst = AppConstants.defaultLineQualityFirst;
 
   double get defaultSpeed => _defaultSpeed;
 
@@ -39,6 +40,9 @@ class SettingsProvider extends ChangeNotifier {
   /// 跨站搜索合并后展示的条数
   int get searchLimit => _searchLimit;
 
+  /// 路径 A：清晰度优先选线路
+  bool get lineQualityFirst => _lineQualityFirst;
+
   bool get hasApi52Key => _apiKey52.isNotEmpty;
 
   void load() {
@@ -51,6 +55,7 @@ class SettingsProvider extends ChangeNotifier {
     _bufferSecs = SettingsService.bufferSecs;
     _slimProgress = SettingsService.slimProgress;
     _searchLimit = SettingsService.searchLimit;
+    _lineQualityFirst = SettingsService.lineQualityFirst;
   }
 
   // ==================== 播放体验 ====================
@@ -83,6 +88,14 @@ class SettingsProvider extends ChangeNotifier {
     await SettingsService.setSlimProgress(v);
   }
 
+  /// 路径 A：清晰度优先选线路（下次解析线路时生效）
+  Future<void> setLineQualityFirst(bool v) async {
+    debugPrint('[SET] lineQualityFirst -> $v');
+    _lineQualityFirst = v;
+    notifyListeners();
+    await SettingsService.setLineQualityFirst(v);
+  }
+
   /// 修改跨站搜索结果条数
   Future<void> setSearchLimit(int v) async {
     debugPrint('[SET] searchLimit -> $v');
@@ -98,7 +111,7 @@ class SettingsProvider extends ChangeNotifier {
     await SettingsService.setDefaultSpeed(speed);
   }
 
-  /// 切换数据源（web=官方网页源 / api52=52api 红果源）
+  /// 切换数据源（web=官方网页源 / api52=52api 聚合源）
   Future<void> setDataSource(String source) async {
     debugPrint('[SRC] setDataSource $_dataSource -> $source');
     _dataSource = source;
