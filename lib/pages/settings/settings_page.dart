@@ -22,7 +22,7 @@ import '../../widgets/update_flow.dart';
 /// 1. 主题设置区域：明暗模式切换 + 自定义APP主题主色选择
 /// 2. 播放器全局默认配置区域：默认播放倍速 0.75x ~ 5x
 /// 2.5 搜索区域：跨站搜索结果条数
-/// 3. 数据源区域：官方网页源 / 52api 红果源切换 + apikey 配置
+/// 3. 数据源区域：官方网页源 / 52api 聚合源切换 + apikey 配置
 /// 3.5 整站站点区域：站点列表（默认折叠，可筛选）+ 自定义站点
 /// 4. 缓存管理区域：查看/一键清除图片缓存
 /// 5. 账号与设备区域：重置设备 ID / 退出登录（清除token）
@@ -388,7 +388,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 context,
                 icon: Icons.language_rounded,
                 label: '官方网页源',
-                desc: '红果官网 · 免配置 · 前 3 集可播',
+                    desc: '官方网页源 · 免配置 · 前 3 集可播',
                 selected:
                     settings.dataSource == AppConstants.dataSourceWeb,
                 seed: seed,
@@ -400,7 +400,7 @@ class _SettingsPageState extends State<SettingsPage> {
               _sourceTile(
                 context,
                 icon: Icons.cloud_outlined,
-                label: '52api 红果源',
+                label: '52api 聚合源',
                 desc: '全集可播 · 需 apikey',
                 selected:
                     settings.dataSource == AppConstants.dataSourceApi52,
@@ -425,7 +425,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 subtitle: Text(
                   settings.hasApi52Key
                       ? '已配置 ${_maskKey(settings.apiKey52)}'
-                      : '未配置（52api.cn 注册开通红果接口）',
+                      : '未配置（52api.cn 注册开通聚合接口）',
                   style: TextStyle(fontSize: 12, color: outline),
                 ),
                 trailing: Icon(Icons.edit_outlined,
@@ -923,7 +923,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final current = lineId.isEmpty ? null : PlayLineResolver.byId(lineId);
     final currentLabel = current?.name ??
         (settings.dataSource == AppConstants.dataSourceApi52
-            ? '52api 红果源'
+            ? '52api 聚合源'
             : '官方网页源');
 
     return [
@@ -1350,7 +1350,7 @@ class _SettingsPageState extends State<SettingsPage> {
           autofocus: true,
           maxLines: 1,
           decoration: const InputDecoration(
-            hintText: '粘贴 apikey（52api.cn 开通红果接口后获取）',
+            hintText: '粘贴 apikey（52api.cn 开通聚合接口后获取）',
             helperText: '留空保存即清除',
             isDense: true,
           ),

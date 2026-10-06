@@ -111,7 +111,7 @@ class SettingsProvider extends ChangeNotifier {
     await SettingsService.setDefaultSpeed(speed);
   }
 
-  /// 切换数据源（web=官方网页源 / api52=52api 红果源）
+  /// 切换数据源（web=官方网页源 / api52=52api 聚合源）
   Future<void> setDataSource(String source) async {
     debugPrint('[SRC] setDataSource $_dataSource -> $source');
     _dataSource = source;

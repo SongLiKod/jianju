@@ -18,7 +18,7 @@ import '../detail/detail_page.dart';
 import '../search/search_page.dart';
 
 /// 首页：推荐信息流
-/// 1. 拉取红果短剧官方首页分区推荐 + 分类分页
+/// 1. 拉取短剧官方首页分区推荐 + 分类分页
 /// 2. 网页源无广告卡片，纯净展示正规短剧
 /// 3. 下拉分页加载更多短剧
 /// 4. 展示封面、标题、简介、集数、热度
@@ -120,7 +120,7 @@ class _HomePageState extends State<HomePage>
     if (v == AppConstants.dataSourceApi52 && !provider.hasApi52Key) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('52api 红果源需先在「设置」中配置 apikey'),
+          content: Text('52api 聚合源需先在「设置」中配置 apikey'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -195,12 +195,12 @@ class _HomePageState extends State<HomePage>
                       row(
                           AppConstants.dataSourceWeb,
                           '官方网页源',
-                          '红果官网 · 免配置 · 前 3 集可播',
+                          '官方网页源 · 免配置 · 前 3 集可播',
                           Icons.language_rounded),
                       const Divider(indent: 16),
                       row(
                           AppConstants.dataSourceApi52,
-                          '52api 红果源',
+                          '52api 聚合源',
                           '全集可播 · 需 apikey',
                           Icons.cloud_outlined),
                       for (final line in PlayLineResolver.allLines)

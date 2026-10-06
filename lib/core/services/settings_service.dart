@@ -104,7 +104,7 @@ class SettingsService {
       StorageService.setString(AppConstants.keySearchLimit, '$v');
 
   // ==================== 数据源 ====================
-  /// 数据源：`web` 官方网页源 / `api52` 第三方红果聚合源 /
+  /// 数据源：`web` 官方网页源 / `api52` 第三方聚合源 /
   /// `line:<线路id>` 整站数据源（该站的首页/分类/搜索/详情/播放全部数据）
   static String get dataSource {
     final raw = StorageService.getString(AppConstants.keyDataSource);

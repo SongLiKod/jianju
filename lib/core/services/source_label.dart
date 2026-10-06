@@ -6,16 +6,16 @@ import 'play_lines.dart';
 ///
 /// 按条目 ID 前缀分派（与详情/播放的分派规则一致，见 `ApiService`）：
 /// - `mg:<lineId>:...` → 整站站点名（如 `bsvod.com`，自定义站点为用户起的名字）
-/// - `a52:...` → 52api 红果聚合源
-/// - 无前缀 → 红果官网网页源
+/// - `a52:...` → 52api 聚合源
+/// - 无前缀 → 官方网页源
 class SourceLabel {
   SourceLabel._();
 
   /// 官方网页源展示名
-  static const String official = '红果官网';
+  static const String official = '官方网页源';
 
   /// 52api 聚合源展示名
-  static const String api52 = '52api 红果源';
+  static const String api52 = '52api 聚合源';
 
   /// 条目所属资源站点名（未知 ID 回退官方）
   static String of(String bookId) {

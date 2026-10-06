@@ -37,7 +37,7 @@ class AppConstants {
   // ==================== 数据源 ====================
   /// 数据源：官方网页源（默认，前 3 集可播）
   static const String dataSourceWeb = 'web';
-  /// 数据源：52api 红果源（全集，需 apikey）
+  /// 数据源：52api 聚合源（全集，需 apikey）
   static const String dataSourceApi52 = 'api52';
 
   /// 数据源前缀：整站数据源（`line:<线路id>`，首页/分类/搜索/详情/播放全走该站）
