@@ -82,6 +82,14 @@ class SettingsService {
   static Future<void> setSlimProgress(bool v) =>
       _setBool(AppConstants.keySlimProgress, v);
 
+  // ==================== 清晰度（docs/简剧 - 清晰度增强方案.md） ====================
+  /// 路径 A：清晰度优先选线路（后台探测各线路码率，播放时按码率排序）
+  static bool get lineQualityFirst => _boolOf(
+      AppConstants.keyLineQualityFirst, AppConstants.defaultLineQualityFirst);
+
+  static Future<void> setLineQualityFirst(bool v) =>
+      _setBool(AppConstants.keyLineQualityFirst, v);
+
   // ==================== 搜索 ====================
   /// 跨站搜索合并后展示的条数（默认 10 条）
   static int get searchLimit {

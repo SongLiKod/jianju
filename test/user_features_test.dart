@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jianju/core/constants/app_constants.dart';
 import 'package:jianju/core/models/drama.dart';
@@ -73,6 +75,47 @@ void main() {
       expect(SettingsService.bufferSecs, AppConstants.defaultBufferSecs);
       await SettingsService.setBufferSecs(99999);
       expect(SettingsService.bufferSecs, AppConstants.defaultBufferSecs);
+    });
+  });
+
+  // ==================== 清晰度增强开关（路径 A；路径 B 已移除） ====================
+
+  group('清晰度增强开关', () {
+    test('默认值：选线开关开', () {
+      final p = SettingsProvider()..load();
+      expect(p.lineQualityFirst, isTrue);
+      expect(SettingsService.lineQualityFirst, isTrue);
+    });
+
+    test('修改后立即生效并持久化，重开 app 仍是修改值', () async {
+      final p = SettingsProvider()..load();
+      await p.setLineQualityFirst(false);
+      expect(p.lineQualityFirst, isFalse);
+
+      final fresh = SettingsProvider()..load();
+      expect(fresh.lineQualityFirst, isFalse);
+      expect(SettingsService.lineQualityFirst, isFalse);
+    });
+
+    test('存储缺失回退默认；按 \'1\' 布尔格式解析', () async {
+      expect(SettingsService.lineQualityFirst,
+          AppConstants.defaultLineQualityFirst);
+
+      await StorageService.setString(AppConstants.keyLineQualityFirst, '0');
+      expect(SettingsService.lineQualityFirst, isFalse);
+
+      await StorageService.setString(AppConstants.keyLineQualityFirst, '');
+      expect(SettingsService.lineQualityFirst,
+          AppConstants.defaultLineQualityFirst);
+    });
+
+    test('路径 B 已整体移除：源码中不再出现高画质渲染相关键位', () {
+      final src = File('lib/core/constants/app_constants.dart').readAsStringSync();
+      expect(src.contains('render_quality'), isFalse);
+      final svc = File('lib/core/services/settings_service.dart').readAsStringSync();
+      expect(svc.contains('renderQuality'), isFalse);
+      final ui = File('lib/pages/settings/settings_page.dart').readAsStringSync();
+      expect(ui.contains('renderQuality'), isFalse);
     });
   });
 

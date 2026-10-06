@@ -248,6 +248,27 @@ class _SettingsPageState extends State<SettingsPage> {
                 },
               ),
               const Divider(indent: 16),
+              // 路径 A：后台测各线路首片码率，播放时按码率优先取链
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary: Icon(Icons.cell_tower_rounded,
+                    color: outline, size: 22),
+                title: const Text('清晰度优先选线路',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  '启动后台探测各站点的视频码率（kbps），'
+                  '播放时先取码率高的线路，再比速度；'
+                  '跨站搜索的排序不受影响',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                value: settings.lineQualityFirst,
+                onChanged: (v) =>
+                    context.read<SettingsProvider>().setLineQualityFirst(v),
+              ),
+              // 路径 B（高画质渲染）已移除：mpv 在部分 Mali GPU 上
+              // 只要改缩放算法就黑屏（mpv-android#392，P30 Pro 实测复现）
+              const Divider(indent: 16),
               // 预载下一集：本集结尾前提前解析下一集，换集秒开不黑屏
               SwitchListTile(
                 contentPadding:

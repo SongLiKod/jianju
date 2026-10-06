@@ -629,6 +629,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 防盗链 CDN 按 UA 过滤：与 Media.httpHeaders 双保险，避免 UA 走
     // mpv 自带的 mpv/curl 串被 403 拒（Failed to open）
     await set('user-agent', ApiConstants.browserUserAgent);
+    // 注意：这里**不碰** scale/cscale/dscale 等画质属性。
+    // 部分 Mali GPU（P30 Pro / Mali-G76 等）驱动有缺陷，任何非 bilinear
+    // 缩放都会「有声无画」黑屏（mpv-android#292/#392，实测连 lanczos 也中招），
+    // 所以路径 B 已整体移除，详见 docs/简剧 - 清晰度增强方案.md。
   }
 
   // ==================== 换集 / 播放源 ====================
@@ -1074,6 +1078,88 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   static String _speedLabel(double s) {
     if (s == s.roundToDouble()) return '${s.toInt()}.0x';
     return '${s}x';
+  }
+
+  // ==================== 画质（路径 A / 路径 B 开关） ====================
+
+  /// 播放页内快捷入口：显示当前线路的码率/测速，并可开关「清晰度优先选线路」。
+  /// （原「高画质渲染」开关已移除：mpv 在部分 Mali GPU 上改缩放算法会黑屏）
+  Future<void> _showQualitySheet() async {
+    _showControls();
+    await showModalBottomSheet<void>(
+      context: context,
+      constraints: sheetConstraints(context),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        final seed = Theme.of(sheetContext).colorScheme.primary;
+        final outline = Theme.of(sheetContext).colorScheme.outline;
+        // watch：开关在 sheet 内拨动时即时刷新勾选状态
+        final settings = sheetContext.watch<SettingsProvider>();
+        final line = PlayLineResolver.lastUsedLine;
+        final st = line == null ? null : PlayLineResolver.statOf(line.id);
+        final br = st?.bitrateKbps;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                child: Row(
+                  children: [
+                    Text('画质',
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: seed)),
+                    const Spacer(),
+                    if (line != null)
+                      Text(
+                        br == null
+                            ? '${line.name} · 码率探测中'
+                            : br <= 0
+                                ? '${line.name} · 码率探测失败'
+                                : '${line.name} · $br kbps',
+                        style: TextStyle(fontSize: 12, color: outline),
+                      ),
+                  ],
+                ),
+              ),
+              if (line != null && st != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      st.emaMs == null
+                          ? '该线路尚无测速样本'
+                          : '解析耗时 ${st.emaMs!.round()}ms · 成功 ${st.ok} 次',
+                      style: TextStyle(fontSize: 11, color: outline),
+                    ),
+                  ),
+                ),
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary:
+                    Icon(Icons.cell_tower_rounded, color: outline, size: 22),
+                title: const Text('清晰度优先选线路',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  '取链时先挑码率高的站点，下次换线路生效',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                value: settings.lineQualityFirst,
+                onChanged: (v) =>
+                    context.read<SettingsProvider>().setLineQualityFirst(v),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // ==================== 音量 ====================
@@ -1646,6 +1732,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   fontSize: 15,
                   fontWeight: FontWeight.w600),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.high_quality_rounded, color: Colors.white),
+            tooltip: '画质',
+            onPressed: _showQualitySheet,
           ),
           IconButton(
             icon: const Icon(Icons.cell_tower_rounded, color: Colors.white),

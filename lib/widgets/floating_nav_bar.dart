@@ -106,7 +106,7 @@ class _NavItemView extends StatelessWidget {
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeOutCubic,
           margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-          padding: EdgeInsets.symmetric(horizontal: selected ? 14 : 0),
+          padding: EdgeInsets.symmetric(horizontal: selected ? 10 : 0),
           decoration: BoxDecoration(
             color: selected
                 ? primaryColor.withValues(alpha: 0.16)
@@ -123,22 +123,34 @@ class _NavItemView extends StatelessWidget {
                 color: selected ? primaryColor : iconInactive,
               ),
               // 选中项展开显示文字（苹果悬浮条风格）
-              AnimatedSize(
-                duration: const Duration(milliseconds: 280),
-                curve: Curves.easeOutCubic,
-                child: selected
-                    ? Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: Text(
-                          item.label,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: primaryColor,
+              // 文字必须可收缩：本格宽度固定（手机上约 50~78dp），
+              // 直接放 Text 会在字体放大时撑破 Row，触发黄黑溢出条。
+              // Flexible + FittedBox 放不下就等比缩小，而不是溢出。
+              Flexible(
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.centerLeft,
+                  child: selected
+                      ? Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              item.label,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: primaryColor,
+                              ),
+                            ),
                           ),
-                        ),
-                      )
-                    : const SizedBox.shrink(),
+                        )
+                      : const SizedBox.shrink(),
+                ),
               ),
             ],
           ),

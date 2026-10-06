@@ -6,9 +6,12 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../constants/app_constants.dart';
 import '../models/episode.dart';
 import 'api_service.dart';
+import 'line_quality.dart';
 import 'play_headers.dart';
+import 'settings_service.dart';
 
 /// 跨集预缓存（"缓冲大小"设置的第二用途）
 ///
@@ -243,9 +246,10 @@ class PrebufferService {
       var listUrl = url;
       var body = '';
       final hdrs = PlayHeaders.forUrl(url); // 清单与分片都带来源请求头
+      final preferQuality = _qualityFirst();
       for (var hop = 0; hop < 3; hop++) {
         body = await _fetchText(listUrl, client, hdrs);
-        final variant = _firstVariant(body);
+        final variant = _pickVariant(body, preferQuality);
         if (variant == null) break;
         listUrl = Uri.parse(listUrl).resolve(variant).toString();
         debugPrint('[PBF] variant -> ${Uri.parse(listUrl).path}');
@@ -361,6 +365,30 @@ class PrebufferService {
     return null;
   }
 
+  /// 变体选择（路径 A）。关闭「清晰度优先」时保持旧逻辑：取清单第一个变体；
+  /// 开启时解析 `#EXT-X-STREAM-INF` 的 `BANDWIDTH` 取最高档。
+  static String? _pickVariant(String body, bool preferQuality) {
+    if (!body.contains('#EXT-X-STREAM-INF')) return null;
+    if (preferQuality) {
+      final best = LineQuality.pickBestVariant(body);
+      if (best != null) return best;
+    }
+    return _firstVariant(body);
+  }
+
+  /// 「清晰度优先」开关（读不到存储时按默认值）
+  static bool _qualityFirst() {
+    try {
+      return SettingsService.lineQualityFirst;
+    } catch (_) {
+      return AppConstants.defaultLineQualityFirst;
+    }
+  }
+
+  /// master 清单里的变体档数（媒体清单为 0）
+  static int variantCount(String body) =>
+      LineQuality.parseVariants(body).length;
+
   /// 起播用清单改写：剔除中插/片尾广告段，生成本地 .m3u8（分片为绝对 URL）。
   ///
   /// 广告段（异目录 10Mbps/1080p，或 bhvod 类站点的**同目录**片尾贴片）会让
@@ -380,15 +408,19 @@ class PrebufferService {
       final client =
           HttpClient()..connectionTimeout = const Duration(seconds: 15);
       try {
-        var listUrl = url;
-        var body = '';
-        final hdrs = PlayHeaders.forUrl(url);
-        for (var hop = 0; hop < 3; hop++) {
-          body = await _fetchText(listUrl, client, hdrs);
-          final variant = _firstVariant(body);
-          if (variant == null) break;
-          listUrl = Uri.parse(listUrl).resolve(variant).toString();
-        }
+      var listUrl = url;
+      var body = '';
+      final hdrs = PlayHeaders.forUrl(url); // 清单与分片都带来源请求头
+      final preferQuality = _qualityFirst();
+      var multiVariant = false;
+      for (var hop = 0; hop < 3; hop++) {
+        body = await _fetchText(listUrl, client, hdrs);
+        if (variantCount(body) > 1) multiVariant = true;
+        final variant = _pickVariant(body, preferQuality);
+        if (variant == null) break;
+        listUrl = Uri.parse(listUrl).resolve(variant).toString();
+        debugPrint('[PBF] variant -> ${Uri.parse(listUrl).path}');
+      }
         if (body.isEmpty) return null;
 
         // 解析：header（首个分片前的标签）+ 有序条目（pre 标签/EXTINF/
@@ -482,7 +514,10 @@ class PrebufferService {
           }
           kept.add(chunk);
         }
-        if (removed == 0 || kept.isEmpty) return null;
+        // 多档 master 在「清晰度优先」下即便无广告也走改写清单，把选中的
+        // 最高档位锁死；否则交回 mpv 自选，可能取到低档变体。
+        if (removed == 0 && !(preferQuality && multiVariant)) return null;
+        if (kept.isEmpty) return null;
 
         final out = StringBuffer()
           ..write(header.join('\n'))
