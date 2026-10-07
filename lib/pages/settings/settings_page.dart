@@ -16,6 +16,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/responsive.dart';
 import '../../widgets/clickable.dart';
 import '../../widgets/update_flow.dart';
+import '../discovery/site_discovery_page.dart';
 
 /// 设置页面（所有用户可修改配置项统一收纳于此，全局默认值以本页为准）
 ///
@@ -268,6 +269,23 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               // 路径 B（高画质渲染）已移除：mpv 在部分 Mali GPU 上
               // 只要改缩放算法就黑屏（mpv-android#392，P30 Pro 实测复现）
+              const Divider(indent: 16),
+              // 播放去广告：关掉即原样起播（含片头/中插/片尾广告）
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                secondary: Icon(Icons.block_rounded, color: outline, size: 22),
+                title: const Text('剔除广告',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text(
+                  '起播前改写播放清单，去掉片头/中插/片尾广告；'
+                  '关闭后原样播放（含广告）',
+                  style: TextStyle(fontSize: 12, color: outline),
+                ),
+                value: settings.stripAds,
+                onChanged: (v) =>
+                    context.read<SettingsProvider>().setStripAds(v),
+              ),
               const Divider(indent: 16),
               // 预载下一集：本集结尾前提前解析下一集，换集秒开不黑屏
               SwitchListTile(
@@ -948,7 +966,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         current != null ? FontWeight.w600 : FontWeight.w400),
               ),
               subtitle: Text(
-                '共 $total 个站点（内置 ${builtin.length} · 自定义 ${custom.length}）· 点击展开选择',
+                '共 $total 个站点（内置 ${builtin.length} · 自定义 ${custom.length}）'
+                '· 启用 ${settings.enabledSiteCount} 个 · 点击展开选择',
                 style: TextStyle(fontSize: 12, color: outline),
               ),
               trailing: Icon(Icons.unfold_more_rounded,
@@ -957,16 +976,21 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const Divider(indent: 16),
             _addSiteTile(seed, outline),
+            const Divider(indent: 16),
+            _discoverSiteTile(seed, outline),
           ] else ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
               child: Text(
-                '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站点'
-                '（标准 maccms 接口站可自定义添加）',
+                '选中后首页、分类、榜单、搜索、详情与播放数据全部来自该站'
+                '（标准 maccms 接口站可自定义添加）；右侧开关可停用站点，'
+                '停用后首页切换列表不显示、搜索也不再查询该站',
                 style: TextStyle(fontSize: 12, color: outline, height: 1.4),
               ),
             ),
             _addSiteTile(seed, outline),
+            const Divider(indent: 16),
+            _discoverSiteTile(seed, outline),
             if (total > 10) _siteFilterField(seed, outline),
             for (final line in shownBuiltin) ...[
               const Divider(indent: 16),
@@ -978,6 +1002,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 selected: settings.dataSource ==
                     AppConstants.dataSourceOfLine(line.id),
                 seed: seed,
+                enabled: settings.isSiteEnabled(line.id),
+                onToggleEnabled: (v) => _toggleSite(line, v),
                 onTap: () => context
                     .read<SettingsProvider>()
                     .setDataSource(AppConstants.dataSourceOfLine(line.id)),
@@ -1037,6 +1063,27 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 在线发现资源站入口：从公网查找候选 → 探测 → 勾选后写入站点库
+  Widget _discoverSiteTile(Color seed, Color outline) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      leading: Icon(Icons.travel_explore_rounded, color: seed, size: 22),
+      title: Text('在线发现资源站',
+          style: TextStyle(
+              fontSize: 15, color: seed, fontWeight: FontWeight.w600)),
+      subtitle: Text('搜索/GitHub/友链三处查找资源站与接口，探测后勾选加入',
+          style: TextStyle(fontSize: 12, color: outline)),
+      onTap: () async {
+        final added = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(builder: (_) => const SiteDiscoveryPage()),
+        );
+        if (added != true || !mounted) return;
+        _toast('站点已加入站点库');
+        setState(() {});
+      },
+    );
+  }
+
   /// 站点筛选输入框（站点多时按名称/域名过滤）
   Widget _siteFilterField(Color seed, Color outline) {
     final border = outline.withValues(alpha: 0.35);
@@ -1090,30 +1137,56 @@ class _SettingsPageState extends State<SettingsPage> {
     required bool selected,
     required Color seed,
     required VoidCallback onTap,
+    bool enabled = true,
+    ValueChanged<bool>? onToggleEnabled,
   }) {
     final outline = Theme.of(context).colorScheme.outline;
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      leading: Icon(icon, size: 22, color: selected ? seed : outline),
+      leading: Icon(icon,
+          size: 22,
+          color: selected && enabled
+              ? seed
+              : outline.withValues(alpha: enabled ? 1 : 0.4)),
       title: Text(label,
           style: TextStyle(
               fontSize: 15,
-              color: selected ? seed : null,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
-      subtitle: Text(desc, style: TextStyle(fontSize: 12, color: outline)),
-      trailing: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 20,
-        height: 20,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: selected ? seed : outline.withValues(alpha: 0.5),
-            width: selected ? 6 : 1.5,
+              color: enabled ? (selected ? seed : null) : outline,
+              fontWeight: selected && enabled ? FontWeight.w600 : FontWeight.w400,
+              decoration: enabled ? null : TextDecoration.lineThrough)),
+      subtitle: Text(
+          enabled ? desc : '已停用 · 首页切换与搜索不再使用该站',
+          style: TextStyle(
+              fontSize: 12,
+              color: enabled ? outline : outline.withValues(alpha: 0.7))),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected && enabled
+                    ? seed
+                    : outline.withValues(alpha: 0.5),
+                width: selected && enabled ? 6 : 1.5,
+              ),
+            ),
           ),
-        ),
+          if (onToggleEnabled != null) ...[
+            const SizedBox(width: 4),
+            Switch(
+              value: enabled,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onChanged: onToggleEnabled,
+            ),
+          ],
+        ],
       ),
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
     );
   }
 
@@ -1121,22 +1194,29 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _customLineTile(BuildContext context, PlayLine line,
       SettingsProvider settings, Color seed, Color outline) {
+    final enabled = settings.isSiteEnabled(line.id);
     final selected = line.mode == PlayLineMode.api &&
         settings.dataSource == AppConstants.dataSourceOfLine(line.id);
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      leading:
-          Icon(Icons.dns_outlined, size: 22, color: selected ? seed : outline),
+      leading: Icon(Icons.dns_outlined,
+          size: 22,
+          color: selected && enabled
+              ? seed
+              : outline.withValues(alpha: enabled ? 1 : 0.4)),
       title: Text(
         line.name,
         style: TextStyle(
           fontSize: 15,
-          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-          color: selected ? seed : null,
+          fontWeight: selected && enabled ? FontWeight.w600 : FontWeight.w400,
+          color: enabled ? (selected ? seed : null) : outline,
+          decoration: enabled ? null : TextDecoration.lineThrough,
         ),
       ),
       subtitle: Text(
-        '${line.mode == PlayLineMode.api ? '自定义整站源' : '自定义网页解析'} · ${line.base}',
+        enabled
+            ? '${line.mode == PlayLineMode.api ? '自定义整站源' : '自定义网页解析'} · ${line.base}'
+            : '已停用 · 首页切换与搜索不再使用该站',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: 12, color: outline),
@@ -1145,10 +1225,15 @@ class _SettingsPageState extends State<SettingsPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (line.mode == PlayLineMode.api)
-            selected
+            selected && enabled
                 ? Icon(Icons.check_circle_rounded, color: seed, size: 20)
                 : Icon(Icons.circle_outlined,
                     size: 18, color: outline.withValues(alpha: 0.4)),
+          Switch(
+            value: enabled,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            onChanged: (v) => _toggleSite(line, v),
+          ),
           IconButton(
             visualDensity: VisualDensity.compact,
             icon: Icon(Icons.delete_outline_rounded,
@@ -1158,7 +1243,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
-      onTap: line.mode == PlayLineMode.api
+      onTap: line.mode == PlayLineMode.api && enabled
           ? () => context
               .read<SettingsProvider>()
               .setDataSource(AppConstants.dataSourceOfLine(line.id))
@@ -1166,152 +1251,47 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 启用/停用站点。停用时若当前数据源或锁定线路指向它，同步复位，
+  /// 避免首页/搜索继续使用已停用的站点。
+  Future<void> _toggleSite(PlayLine line, bool enabled) async {
+    final provider = context.read<SettingsProvider>();
+    if (enabledSiteCountWouldBeZero(provider, enabled)) {
+      _toast('至少保留一个启用中的站点');
+      return;
+    }
+    await provider.setSiteEnabled(line.id, enabled);
+    if (!mounted) return;
+    if (!enabled) {
+      if (provider.dataSource == AppConstants.dataSourceOfLine(line.id)) {
+        await provider.setDataSource(AppConstants.dataSourceWeb);
+      }
+      if (provider.pinnedLineId == line.id) {
+        await provider.setPinnedLine('');
+      }
+    }
+    if (!mounted) return;
+    _toast(enabled ? '已启用「${line.name}」' : '已停用「${line.name}」');
+    setState(() {});
+  }
+
+  /// 关停后是否会导致没有任何启用站点（用于给出提示并拒绝操作）
+  static bool enabledSiteCountWouldBeZero(
+      SettingsProvider provider, bool enabled) {
+    if (enabled) return false;
+    return provider.enabledSiteCount <= 1;
+  }
+
   /// 添加自定义站点：填写地址 → 自动检测 → 通过即保存
   Future<void> _addCustomSite() async {
-    final baseCtrl = TextEditingController();
-    final nameCtrl = TextEditingController();
-    var mode = PlayLineMode.api;
+    // 控件与校验状态全部由对话框自身持有：showDialog 的 future 在 pop 时
+    // 就会完成，而退场动画里的 TextField 还活着。若在这里立刻 dispose 控件，
+    // 会抛「A TextEditingController was used after being disposed」，并连带
+    // 让元素树中途崩溃（InheritedElement.debugDeactivated:
+    // _dependents.isEmpty is not true）。
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) {
-        var testing = false;
-        var error = '';
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            return AlertDialog(
-              title: const Text('添加自定义站点', style: TextStyle(fontSize: 17)),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: baseCtrl,
-                      autofocus: true,
-                      maxLines: 1,
-                      keyboardType: TextInputType.url,
-                      decoration: const InputDecoration(
-                        labelText: '站点地址',
-                        hintText: 'example.com 或 https://example.com',
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: nameCtrl,
-                      maxLines: 1,
-                      decoration: const InputDecoration(
-                        labelText: '站点名称（可选）',
-                        hintText: '留空自动取域名',
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        ChoiceChip(
-                          label: const Text('标准接口'),
-                          selected: mode == PlayLineMode.api,
-                          onSelected: (_) => setDialogState(
-                              () => mode = PlayLineMode.api),
-                        ),
-                        const SizedBox(width: 8),
-                        ChoiceChip(
-                          label: const Text('网页解析'),
-                          selected: mode == PlayLineMode.html,
-                          onSelected: (_) => setDialogState(
-                              () => mode = PlayLineMode.html),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      mode == PlayLineMode.api
-                          ? '接口模式可作整站源（首页/搜索/详情/播放全走该站）'
-                          : '网页模式仅用于播放解析，不参与首页/搜索',
-                      style: const TextStyle(fontSize: 11.5, color: Colors.grey),
-                    ),
-                    if (testing) ...[
-                      const SizedBox(height: 12),
-                      const Row(
-                        children: [
-                          SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                          SizedBox(width: 8),
-                          Text('正在检测站点可用性…',
-                              style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
-                    ],
-                    if (error.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        '检测未通过：$error',
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.redAccent),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
-              actions: [
-                TextButton(
-                  onPressed: testing ? null : () => Navigator.pop(dialogContext, false),
-                  child: const Text('取消'),
-                ),
-                if (error.isNotEmpty && !testing)
-                  TextButton(
-                    onPressed: () =>
-                        Navigator.pop(dialogContext, true),
-                    child: const Text('仍要添加'),
-                  ),
-                FilledButton(
-                  onPressed: testing
-                      ? null
-                      : () async {
-                          final base =
-                              PlayLineResolver.normalizeBase(baseCtrl.text);
-                          if (base.isEmpty || Uri.tryParse(base) == null) {
-                            setDialogState(() => error = '请填写有效的站点地址');
-                            return;
-                          }
-                          setDialogState(() {
-                            testing = true;
-                            error = '';
-                          });
-                          final reason =
-                              await PlayLineResolver.probeCustom(base, mode);
-                          if (reason != null) {
-                            setDialogState(() {
-                              testing = false;
-                              error = reason;
-                            });
-                            return;
-                          }
-                          final name = nameCtrl.text.trim().isEmpty
-                              ? (Uri.tryParse(base)?.host ?? base)
-                              : nameCtrl.text.trim();
-                          await PlayLineResolver.addCustom(
-                              name: name, base: base, mode: mode);
-                          if (dialogContext.mounted) {
-                            Navigator.pop(dialogContext, true);
-                          }
-                        },
-                  child: const Text('检测并添加'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (_) => const _AddCustomSiteDialog(),
     );
-    baseCtrl.dispose();
-    nameCtrl.dispose();
     if (saved == true) {
       debugPrint('[SET] custom site added');
       if (!mounted) return;
@@ -1341,36 +1321,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 编辑/清除 52api apikey，返回是否保存成功
   Future<bool> _editApiKey() async {
-    final controller =
-        TextEditingController(text: context.read<SettingsProvider>().apiKey52);
-    final saved = await showDialog<bool>(
+    // 控件随对话框卸载后才 dispose（见 _AddCustomSiteDialog 说明）
+    final key = await showDialog<String?>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('52api apikey', style: TextStyle(fontSize: 17)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 1,
-          decoration: const InputDecoration(
-            hintText: '粘贴 apikey（52api.cn 开通聚合接口后获取）',
-            helperText: '留空保存即清除',
-            isDense: true,
-          ),
-        ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('保存')),
-        ],
-      ),
+      builder: (_) =>
+          _ApiKeyDialog(initial: context.read<SettingsProvider>().apiKey52),
     );
-    final key = controller.text.trim();
-    controller.dispose();
-    if (saved != true) return false;
+    if (key == null) return false;
     if (!mounted) return true;
     await context.read<SettingsProvider>().setApiKey52(key);
     if (!mounted) return true;
@@ -1381,5 +1338,229 @@ class _SettingsPageState extends State<SettingsPage> {
   static String _maskKey(String key) {
     if (key.length <= 8) return '****';
     return '${key.substring(0, 4)}****${key.substring(key.length - 4)}';
+  }
+}
+
+/// 添加自定义站点对话框。
+///
+/// 输入框与校验状态由本 State 持有，随对话框路由真正卸载（退场动画结束）
+/// 后才 dispose。若由外层在 `showDialog` future 完成时立刻 dispose，
+/// 退场动画中的 TextField 仍会 `addListener` → 抛
+/// 「A TextEditingController was used after being disposed」，
+/// 并使元素树半途崩溃，连带触发
+/// `InheritedElement.debugDeactivated: _dependents.isEmpty is not true`。
+class _AddCustomSiteDialog extends StatefulWidget {
+  const _AddCustomSiteDialog();
+
+  @override
+  State<_AddCustomSiteDialog> createState() => _AddCustomSiteDialogState();
+}
+
+class _AddCustomSiteDialogState extends State<_AddCustomSiteDialog> {
+  late final TextEditingController _baseCtrl;
+  late final TextEditingController _nameCtrl;
+  PlayLineMode _mode = PlayLineMode.api;
+  bool _testing = false;
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _baseCtrl = TextEditingController();
+    _nameCtrl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _baseCtrl.dispose();
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _testAndAdd() async {
+    final base = PlayLineResolver.normalizeBase(_baseCtrl.text);
+    if (base.isEmpty || Uri.tryParse(base) == null) {
+      setState(() => _error = '请填写有效的站点地址');
+      return;
+    }
+    setState(() {
+      _testing = true;
+      _error = '';
+    });
+    final reason = await PlayLineResolver.probeCustom(base, _mode);
+    if (!mounted) return;
+    if (reason != null) {
+      setState(() {
+        _testing = false;
+        _error = reason;
+      });
+      return;
+    }
+    await _addNow();
+  }
+
+  /// 落库并关闭对话框（检测通过与「仍要添加」共用）
+  Future<void> _addNow() async {
+    final base = PlayLineResolver.normalizeBase(_baseCtrl.text);
+    if (base.isEmpty || Uri.tryParse(base) == null) {
+      setState(() => _error = '请填写有效的站点地址');
+      return;
+    }
+    final name = _nameCtrl.text.trim().isEmpty
+        ? (Uri.tryParse(base)?.host ?? base)
+        : _nameCtrl.text.trim();
+    await PlayLineResolver.addCustom(name: name, base: base, mode: _mode);
+    if (!mounted) return;
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('添加自定义站点', style: TextStyle(fontSize: 17)),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _baseCtrl,
+              autofocus: true,
+              maxLines: 1,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '站点地址',
+                hintText: 'example.com 或 https://example.com',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nameCtrl,
+              maxLines: 1,
+              decoration: const InputDecoration(
+                labelText: '站点名称（可选）',
+                hintText: '留空自动取域名',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                ChoiceChip(
+                  label: const Text('标准接口'),
+                  selected: _mode == PlayLineMode.api,
+                  onSelected: (_) => setState(() => _mode = PlayLineMode.api),
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text('网页解析'),
+                  selected: _mode == PlayLineMode.html,
+                  onSelected: (_) => setState(() => _mode = PlayLineMode.html),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _mode == PlayLineMode.api
+                  ? '接口模式可作整站源（首页/搜索/详情/播放全走该站）'
+                  : '网页模式仅用于播放解析，不参与首页/搜索',
+              style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+            ),
+            if (_testing) ...[
+              const SizedBox(height: 12),
+              const Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('正在检测站点可用性…', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            ],
+            if (_error.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                '检测未通过：$_error',
+                style: const TextStyle(fontSize: 12, color: Colors.redAccent),
+              ),
+            ],
+          ],
+        ),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      actions: [
+        TextButton(
+          onPressed:
+              _testing ? null : () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
+        if (_error.isNotEmpty && !_testing)
+          TextButton(
+            onPressed: _addNow,
+            child: const Text('仍要添加'),
+          ),
+        FilledButton(
+          onPressed: _testing ? null : _testAndAdd,
+          child: const Text('检测并添加'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 52api apikey 输入对话框：返回保存的 key，取消返回 null。
+/// 控件随对话框卸载后 dispose（见 [_AddCustomSiteDialog] 说明）。
+class _ApiKeyDialog extends StatefulWidget {
+  const _ApiKeyDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_ApiKeyDialog> createState() => _ApiKeyDialogState();
+}
+
+class _ApiKeyDialogState extends State<_ApiKeyDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.initial);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('52api apikey', style: TextStyle(fontSize: 17)),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        maxLines: 1,
+        decoration: const InputDecoration(
+          hintText: '粘贴 apikey（52api.cn 开通聚合接口后获取）',
+          helperText: '留空保存即清除',
+          isDense: true,
+        ),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+            child: const Text('保存')),
+      ],
+    );
   }
 }

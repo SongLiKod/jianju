@@ -203,7 +203,7 @@ class _HomePageState extends State<HomePage>
                           '52api 聚合源',
                           '全集可播 · 需 apikey',
                           Icons.cloud_outlined),
-                      for (final line in PlayLineResolver.allLines)
+                      for (final line in PlayLineResolver.enabledLines)
                         if (line.mode == PlayLineMode.api) ...[
                           const Divider(indent: 16),
                           row(

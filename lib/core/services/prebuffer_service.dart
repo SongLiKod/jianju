@@ -285,26 +285,26 @@ class PrebufferService {
       }
       if (current.isNotEmpty) chunks.add(current);
       if (chunks.isEmpty) throw Exception('清单无分片');
-      String dirOf(String abs) {
-        final u = Uri.parse(abs);
-        final p = u.path;
-        return '${u.origin}${p.substring(0, p.lastIndexOf('/') + 1)}';
-      }
-
-      final firstDir = dirOf(chunks.first.first.url);
+      // 设置 → 播放 → 剔除广告 关闭：缓存合并保留原清单全部分片（含广告）
+      final stripAds = SettingsService.stripAds;
+      final mainDir =
+          _mainDirOf(chunks, (s) => s.url, (s) => s.dur);
+      final baseChunk = _largestChunkIn(chunks, mainDir, (s) => s.url);
+      final baseSegs = baseChunk ?? <_Seg>[];
       final segs = <String>[];
       var removed = 0;
       for (var ci = 0; ci < chunks.length; ci++) {
         final chunk = chunks[ci];
-        if (ci > 0) {
-          if (dirOf(chunk.first.url) != firstDir) {
-            removed += chunk.length;
-            continue;
-          }
-          if (await _isAdBlock(client, hdrs, chunks.first, chunk)) {
-            removed += chunk.length;
-            continue;
-          }
+        if (chunk.isEmpty) continue;
+        if (stripAds && _dirOf(chunk.first.url) != mainDir) {
+          removed += chunk.length;
+          continue;
+        }
+        if (stripAds &&
+            !identical(chunk, baseChunk) &&
+            await _isAdBlock(client, hdrs, baseSegs, chunk)) {
+          removed += chunk.length;
+          continue;
         }
         segs.addAll(chunk.map((s) => s.url));
       }
@@ -403,6 +403,8 @@ class PrebufferService {
   /// 让 mpv 只读去广告清单即可根治：无广告、非 HLS、改写失败一律返回 null
   /// （原样起播，行为不变）。
   static Future<String?> rewritePlaylist(String url) async {
+    // 设置 → 播放 → 剔除广告 关闭：不做清单改写，原样起播
+    if (!SettingsService.stripAds) return null;
     try {
       if (!url.toLowerCase().contains('.m3u8')) return null;
       final client =
@@ -482,14 +484,12 @@ class PrebufferService {
         if (current.isNotEmpty) chunks.add(current);
         if (chunks.isEmpty) return null;
 
-        String dirOf(String abs) {
-          final u = Uri.parse(abs);
-          final p = u.path;
-          return '${u.origin}${p.substring(0, p.lastIndexOf('/') + 1)}';
-        }
-
-        final firstDir = dirOf(chunks.first.first.url);
-        final baseSegs = chunks.first
+        // 正片目录 = 总时长最长的目录（片头广告会排在首块，按首块取基准
+        // 会把正片整块删光、只留下广告）
+        final mainDir =
+            _mainDirOf(chunks, (e) => e.url, (e) => _extinfDur(e.extinf));
+        final baseChunk = _largestChunkIn(chunks, mainDir, (e) => e.url);
+        final baseSegs = (baseChunk ?? chunks.first)
             .map((e) => _Seg(e.url, _extinfDur(e.extinf)))
             .toList();
         final kept = <List<_PlEntry>>[];
@@ -497,13 +497,14 @@ class PrebufferService {
         var byRate = 0;
         for (var ci = 0; ci < chunks.length; ci++) {
           final chunk = chunks[ci];
-          if (ci > 0) {
-            if (dirOf(chunk.first.url) != firstDir) {
-              removed += chunk.length;
-              continue;
-            }
-            // 同目录非首块（bhvod 类站点正片与片尾贴片同目录，光看目录
-            // 判不出）：Range 探测真实分片大小算码率，与正片偏离即广告
+          if (chunk.isEmpty) continue;
+          if (_dirOf(chunk.first.url) != mainDir) {
+            removed += chunk.length;
+            continue;
+          }
+          // 同目录的非基准块（bhvod 类站点正片与片尾贴片同目录，光看目录
+          // 判不出）：Range 探测真实分片大小算码率，与正片偏离即广告
+          if (!identical(chunk, baseChunk)) {
             final segs =
                 chunk.map((e) => _Seg(e.url, _extinfDur(e.extinf))).toList();
             if (await _isAdBlock(client, hdrs, baseSegs, segs)) {
@@ -582,6 +583,59 @@ class PrebufferService {
   static double _extinfDur(String extinf) {
     final m = RegExp(r'#EXTINF:\s*([\d.]+)').firstMatch(extinf);
     return m == null ? 0 : (double.tryParse(m.group(1)!) ?? 0);
+  }
+
+  /// 分片绝对地址 → 所在目录（origin + 目录路径）
+  static String _dirOf(String abs) {
+    final u = Uri.parse(abs);
+    final p = u.path;
+    return '${u.origin}${p.substring(0, p.lastIndexOf('/') + 1)}';
+  }
+
+  /// 正片所在目录：取「累计时长最长」的目录。
+  ///
+  /// 不能用首块当基准——片头贴片广告排在最前（实测 fhapi9 首块 26.6s 广告，
+  /// 正片两段共 68 分钟），按首块取会把正片整块删光、反倒保留广告，表现为
+  /// 「只能播放广告，正片播放不了」。广告块最多几十秒，按时长取最大值既能
+  /// 排掉片头也能排掉中插/片尾；同目录时返回首个（维持原行为）。
+  static String _mainDirOf<T>(
+    List<List<T>> chunks,
+    String Function(T) urlOf,
+    double Function(T) durOf,
+  ) {
+    final durByDir = <String, double>{};
+    for (final chunk in chunks) {
+      if (chunk.isEmpty) continue;
+      final dir = _dirOf(urlOf(chunk.first));
+      var sum = 0.0;
+      for (final e in chunk) {
+        sum += durOf(e);
+      }
+      durByDir[dir] = (durByDir[dir] ?? 0) + sum;
+    }
+    var main = '';
+    var best = -1.0;
+    for (final e in durByDir.entries) {
+      if (e.value > best) {
+        best = e.value;
+        main = e.key;
+      }
+    }
+    if (main.isEmpty && chunks.isNotEmpty && chunks.first.isNotEmpty) {
+      return _dirOf(urlOf(chunks.first.first));
+    }
+    return main;
+  }
+
+  /// [mainDir] 里分片最多的块——作为码率基准（正片块远大于广告块）
+  static List<T>? _largestChunkIn<T>(
+      List<List<T>> chunks, String mainDir, String Function(T) urlOf) {
+    List<T>? best;
+    for (final c in chunks) {
+      if (c.isEmpty || _dirOf(urlOf(c.first)) != mainDir) continue;
+      if (best == null || c.length > best.length) best = c;
+    }
+    return best;
   }
 
   /// Range 探测单片总大小（字节）。HEAD 在该 CDN 回 502，只能用 `bytes=0-0`
@@ -869,3 +923,5 @@ class _Fmt {
     return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 }
+
+

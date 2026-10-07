@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import '../constants/app_constants.dart';
+import '../services/play_lines.dart';
 import '../services/settings_service.dart';
 
 /// 全局设置状态（默认倍速 / 数据源 / 52api apikey / 播放线路）
@@ -15,6 +18,10 @@ class SettingsProvider extends ChangeNotifier {
   bool _slimProgress = AppConstants.defaultSlimProgress;
   int _searchLimit = AppConstants.defaultSearchLimit;
   bool _lineQualityFirst = AppConstants.defaultLineQualityFirst;
+  bool _stripAds = AppConstants.defaultStripAds;
+  String _searchScope = AppConstants.defaultSearchScope;
+  final Set<String> _disabledSites = <String>{};
+  final Set<String> _pickedSites = <String>{};
 
   double get defaultSpeed => _defaultSpeed;
 
@@ -43,6 +50,29 @@ class SettingsProvider extends ChangeNotifier {
   /// 路径 A：清晰度优先选线路
   bool get lineQualityFirst => _lineQualityFirst;
 
+  /// 播放去广告开关（关闭后原样起播）
+  bool get stripAds => _stripAds;
+
+  /// 搜索范围：跨站 / 本站 / 指定站点
+  String get searchScope => _searchScope;
+
+  /// 「指定站点」搜索勾选的站点 id
+  Set<String> get pickedSites => Set.unmodifiable(_pickedSites);
+
+  /// 已停用的站点 id（首页切换列表与搜索均不出现）
+  Set<String> get disabledSites => Set.unmodifiable(_disabledSites);
+
+  bool isSiteEnabled(String lineId) => !_disabledSites.contains(lineId);
+
+  /// 启用中的站点数（至少保留 1 个）
+  int get enabledSiteCount {
+    var n = 0;
+    for (final line in PlayLineResolver.allLines) {
+      if (!_disabledSites.contains(line.id)) n++;
+    }
+    return n;
+  }
+
   bool get hasApi52Key => _apiKey52.isNotEmpty;
 
   void load() {
@@ -56,6 +86,28 @@ class SettingsProvider extends ChangeNotifier {
     _slimProgress = SettingsService.slimProgress;
     _searchLimit = SettingsService.searchLimit;
     _lineQualityFirst = SettingsService.lineQualityFirst;
+    _stripAds = SettingsService.stripAds;
+    _searchScope = SettingsService.searchScope;
+    _disabledSites
+      ..clear()
+      ..addAll(_idSet(SettingsService.disabledSitesRaw));
+    _pickedSites
+      ..clear()
+      ..addAll(_idSet(SettingsService.pickedSearchSitesRaw));
+  }
+
+  static Set<String> _idSet(String raw) {
+    if (raw.trim().isEmpty) return <String>{};
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return <String>{};
+      return {
+        for (final e in list)
+          if (e.toString().trim().isNotEmpty) e.toString().trim(),
+      };
+    } catch (_) {
+      return <String>{};
+    }
   }
 
   // ==================== 播放体验 ====================
@@ -102,6 +154,45 @@ class SettingsProvider extends ChangeNotifier {
     _searchLimit = v;
     notifyListeners();
     await SettingsService.setSearchLimit(v);
+  }
+
+  /// 播放去广告开关
+  Future<void> setStripAds(bool v) async {
+    debugPrint('[SET] stripAds -> $v');
+    _stripAds = v;
+    notifyListeners();
+    await SettingsService.setStripAds(v);
+  }
+
+  /// 搜索范围（跨站 / 本站 / 指定站点）
+  Future<void> setSearchScope(String scope) async {
+    if (!AppConstants.searchScopeOptions.contains(scope)) return;
+    debugPrint('[SET] searchScope -> $scope');
+    _searchScope = scope;
+    notifyListeners();
+    await SettingsService.setSearchScope(scope);
+  }
+
+  /// 「指定站点」搜索勾选集合
+  Future<void> setPickedSites(Set<String> ids) async {
+    _pickedSites
+      ..clear()
+      ..addAll(ids);
+    notifyListeners();
+    await SettingsService.setPickedSearchSitesRaw(jsonEncode(_pickedSites.toList()));
+  }
+
+  /// 启用/停用站点（停用后首页切换不显示、搜索与播放取链不再使用）
+  Future<void> setSiteEnabled(String lineId, bool enabled) async {
+    if (enabled) {
+      _disabledSites.remove(lineId);
+    } else {
+      if (enabledSiteCount <= 1) return; // 至少保留一个可用站点
+      _disabledSites.add(lineId);
+    }
+    debugPrint('[SET] site $lineId -> ${enabled ? 'on' : 'off'}');
+    notifyListeners();
+    await SettingsService.setDisabledSitesRaw(jsonEncode(_disabledSites.toList()));
   }
 
   /// 修改全局默认倍速（播放器打开视频时自动加载）

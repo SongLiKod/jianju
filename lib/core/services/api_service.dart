@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../constants/api_constants.dart';
+import '../constants/app_constants.dart';
 import '../models/drama.dart';
 import '../models/episode.dart';
 import '../network/http_client.dart';
@@ -195,17 +196,22 @@ class ApiService {
   /// 整次跨站搜索总预算：到点即用已合并结果收尾
   static const Duration _searchBudget = Duration(seconds: 20);
 
-  /// 跨站聚合搜索：当前数据源 + 官方网页源 + 52api（启用时）+ 全部 API 整站站点
+  /// 跨站聚合搜索：当前数据源 + 官方网页源 + 52api（启用时）+ 全部启用中的
+  /// 整站站点并发查询
   ///
   /// 各站并发查询，站点陆续返回时通过 [onUpdate] 吐出已合并结果
   /// （参数为 合并结果 / 已完成站数 / 总站数），界面可边搜边展示；
   /// 单站失败或超时只跳过该站。合并规则见 [mergeSearchResults]。
+  ///
+  /// [onlyIds] 非空 = 只查这些站点（`web` 官方源 / `api52` / 线路 id），
+  /// 供搜索页的「指定站点」模式使用。
   static Future<List<Drama>> searchAcross({
     required String keyword,
     required int limit,
     void Function(List<Drama> merged, int done, int total)? onUpdate,
+    Set<String>? onlyIds,
   }) async {
-    final sources = _searchSources(keyword);
+    final sources = _searchSources(keyword, onlyIds: onlyIds);
     final total = sources.length;
     final results = <int, List<Drama>>{};
     var done = 0;
@@ -248,12 +254,32 @@ class ApiService {
   }
 
   /// 跨站搜索的查询目标与优先级（当前源最前，其次官方、52api，
-  /// 其余整站站点按历史测速排序）
+  /// 其余整站站点按历史测速排序）。[onlyIds] 指定时只返回选中的目标。
   static List<({int pri, Future<List<Drama>> Function() run})>
-      _searchSources(String keyword) {
+      _searchSources(String keyword, {Set<String>? onlyIds}) {
     final out = <({int pri, Future<List<Drama>> Function() run})>[];
     var pri = 0;
     final current = MaccmsSource.current();
+
+    // 指定站点：只查用户勾选的目标（官方源 / 52api / 线路）
+    if (onlyIds != null && onlyIds.isNotEmpty) {
+      if (onlyIds.contains(AppConstants.dataSourceWeb)) {
+        out.add((pri: pri++, run: () => _searchOfficial(keyword)));
+      }
+      if (onlyIds.contains(AppConstants.dataSourceApi52) &&
+          Api52Source.enabled) {
+        out.add((pri: pri++, run: () => Api52Source.search(keyword)));
+      }
+      final byId = {for (final l in PlayLineResolver.allLines) l.id: l};
+      for (final id in onlyIds) {
+        final line = byId[id];
+        if (line == null) continue;
+        final site = MaccmsSource(line);
+        out.add((pri: pri++, run: () => site.search(keyword)));
+      }
+      return out;
+    }
+
     if (current != null) {
       final site = current;
       out.add((pri: pri++, run: () => site.search(keyword)));

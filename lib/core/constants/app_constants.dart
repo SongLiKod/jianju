@@ -24,15 +24,22 @@ class AppConstants {
   static const String keySlimProgress = 'settings.slim_progress';
   // 清晰度（详见 docs/简剧 - 清晰度增强方案.md）
   static const String keyLineQualityFirst = 'settings.line_quality_first';
+  // 播放去广告
+  static const String keyStripAds = 'settings.strip_ads';
   // 数据源
   static const String keyDataSource = 'settings.data_source'; // web/api52/line:<id>
   static const String keyApi52Key = 'settings.api52_key';
   // 搜索
   static const String keySearchLimit = 'settings.search_limit'; // 结果条数
+  static const String keySearchScope = 'settings.search_scope'; // 跨站/本站/指定
+  static const String keyPickedSearchSites =
+      'settings.picked_search_sites'; // 指定站点 id JSON 数组
   // 播放线路
   static const String keyPinnedLine = 'settings.pinned_line'; // ''=自动（最快）
   static const String keyPlayLineStats = 'local.play_line_stats'; // 线路测速统计 JSON
   static const String keyCustomLines = 'local.custom_lines'; // 自定义站点 JSON
+  static const String keyDisabledSites =
+      'local.disabled_sites'; // 已停用站点 id JSON 数组
 
   // ==================== 数据源 ====================
   /// 数据源：官方网页源（默认，前 3 集可播）
@@ -91,6 +98,8 @@ class AppConstants {
   static const List<int> bufferOptions = [10, 20, 60, 180];
   /// 底部细进度条默认开启
   static const bool defaultSlimProgress = true;
+  /// 播放去广告默认开启（片头/中插/片尾广告会让 mpv 把流重启回 00:00）
+  static const bool defaultStripAds = true;
 
   // ==================== 清晰度（路径 A） ====================
   /// 路径 A：清晰度优先选线路（后台探测各线路码率，播放时按码率排序）
@@ -111,6 +120,21 @@ class AppConstants {
   static const int defaultSearchLimit = 10;
   /// 搜索结果条数候选项（设置 → 搜索 → 搜索结果条数）
   static const List<int> searchLimitOptions = [10, 20, 30, 50, 100];
+
+  // ==================== 搜索范围 ====================
+  /// 跨站：当前源 + 官方 + 52api + 全部启用中的整站站点并发查询
+  static const String searchScopeCross = 'cross';
+  /// 本站：只查当前所选数据源
+  static const String searchScopeLocal = 'local';
+  /// 指定：只查用户勾选的站点
+  static const String searchScopePicked = 'picked';
+  static const String defaultSearchScope = searchScopeCross;
+  /// 搜索范围候选项（label 见搜索页）
+  static const List<String> searchScopeOptions = [
+    searchScopeCross,
+    searchScopeLocal,
+    searchScopePicked,
+  ];
 
   // ==================== 使用声明（关于页「使用声明」全文） ====================
   static const String usageStatement = '''
