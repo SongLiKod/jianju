@@ -4,7 +4,7 @@ import 'package:jianju/core/services/storage_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 跨站搜索线上诊断：并发搜索官方源 + 全部整站站点，
-/// 验证结果能边搜边出、去重合并且不超过配置条数。
+/// 验证结果能边搜边出、同名不跨站合并且不超过配置条数。
 void main() {
   setUp(() async {
     SharedPreferences.setMockInitialValues({});

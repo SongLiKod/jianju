@@ -361,7 +361,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     color: outline, size: 22),
                 title: const Text('搜索结果条数',
                     style: TextStyle(fontSize: 15)),
-                subtitle: Text('跨站搜索全部站点，去重合并后最多展示的条数',
+                subtitle: Text(
+                    '跨站搜索全部站点，最多展示的条数'
+                    '（同名剧按站点逐条列出，不合并）',
                     style: TextStyle(fontSize: 12, color: outline)),
                 trailing: _chip('${settings.searchLimit} 条', seed, true),
                 onTap: () async {
