@@ -107,7 +107,7 @@ class AppConstants {
   static const int maxSearchHistory = 20;
 
   // ==================== 搜索结果 ====================
-  /// 跨站搜索合并后默认展示条数
+  /// 跨站搜索默认展示条数（同名剧不跨站合并，各站各算一条）
   static const int defaultSearchLimit = 10;
   /// 搜索结果条数候选项（设置 → 搜索 → 搜索结果条数）
   static const List<int> searchLimitOptions = [10, 20, 30, 50, 100];

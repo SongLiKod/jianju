@@ -91,7 +91,7 @@ class SettingsService {
       _setBool(AppConstants.keyLineQualityFirst, v);
 
   // ==================== 搜索 ====================
-  /// 跨站搜索合并后展示的条数（默认 10 条）
+  /// 跨站搜索最多展示的条数（默认 10 条）
   static int get searchLimit {
     final v = int.tryParse(StorageService.getString(AppConstants.keySearchLimit));
     if (v == null || !AppConstants.searchLimitOptions.contains(v)) {

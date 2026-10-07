@@ -37,7 +37,7 @@ class SettingsProvider extends ChangeNotifier {
   /// 底部细进度条常显
   bool get slimProgress => _slimProgress;
 
-  /// 跨站搜索合并后展示的条数
+  /// 跨站搜索最多展示的条数
   int get searchLimit => _searchLimit;
 
   /// 路径 A：清晰度优先选线路

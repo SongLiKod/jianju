@@ -273,20 +273,43 @@ class ApiService {
     return out;
   }
 
-  /// 跨站结果合并：按来源优先级升序拼接，归一化剧名去重，截断到 [limit]
+  /// 跨站结果合并：**同名不跨站合并**，按来源轮流取条，截断到 [limit]
+  ///
+  /// - 同名剧在不同站点是各自独立的条目，逐条列出，供用户选源播放
+  ///   （来源由 `SourceLabel.of(bookId)` 标注）；去重只在**同一来源内部**
+  ///   按归一化剧名做，用来挡掉同站的镜像/重复条目。
+  /// - 轮流取（round-robin）而非「把第一个来源取完再取下一个」：否则官方源
+  ///   首屏 10 条会直接占满 [limit]，其它站点一条都露不出来，用户就无从选源。
+  /// - 来源优先级（[byPriority] 的 key 升序）仍决定同一轮内的先后顺序。
   static List<Drama> mergeSearchResults(
       Map<int, List<Drama>> byPriority, int limit) {
     final keys = byPriority.keys.toList()..sort();
-    final out = <Drama>[];
-    final seen = <String>{};
+    final bySource = <List<Drama>>[];
     for (final k in keys) {
+      final seen = <String>{};
+      final list = <Drama>[];
       for (final d in byPriority[k]!) {
         final t = PlayLineResolver.normalizeTitle(d.title);
+        // 只在本来源内去重，跨来源的同名剧互不算重复
         final key = t.isEmpty ? d.bookId : t;
         if (!seen.add(key)) continue;
-        out.add(d);
+        list.add(d);
+      }
+      if (list.isNotEmpty) bySource.add(list);
+    }
+
+    final out = <Drama>[];
+    var idx = 0;
+    while (true) {
+      var added = false;
+      for (final list in bySource) {
+        if (idx >= list.length) continue;
+        out.add(list[idx]);
+        added = true;
         if (limit > 0 && out.length >= limit) return out;
       }
+      if (!added) break;
+      idx++;
     }
     return out;
   }
