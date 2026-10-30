@@ -45,10 +45,33 @@ class _HomePageState extends State<HomePage>
   @override
   bool get wantKeepAlive => true;
 
+  late final SettingsProvider _settings;
+
   @override
   void initState() {
     super.initState();
+    _settings = context.read<SettingsProvider>();
+    _lastSource = _settings.dataSource;
+    _settings.addListener(_onSettingsChanged);
     _refresh();
+  }
+
+  /// 切换数据源后自动刷新信息流（主页切换弹层与设置页两条路径都覆盖）
+  String _lastSource = '';
+
+  void _onSettingsChanged() {
+    if (!mounted) return;
+    final src = _settings.dataSource;
+    if (src == _lastSource) return;
+    _lastSource = src;
+    debugPrint('[HOME] 数据源变化 -> $src，刷新信息流');
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _settings.removeListener(_onSettingsChanged);
+    super.dispose();
   }
 
   /// 滚动到底部 400px 触发分页（走通知而非 ScrollController，
@@ -130,7 +153,7 @@ class _HomePageState extends State<HomePage>
     return true;
   }
 
-  /// 数据源切换底部弹层：官方源 + 整站线路分组展示，当前项高亮打勾
+  /// 数据源切换底部弹层：官方源 + 52api + YouTube 正版源 + 整站线路分组展示，当前项高亮打勾
   void _showSourceSheet() {
     final current = context.read<SettingsProvider>().dataSource;
     final seed =
@@ -203,6 +226,12 @@ class _HomePageState extends State<HomePage>
                           '52api 聚合源',
                           '全集可播 · 需 apikey',
                           Icons.cloud_outlined),
+                      const Divider(indent: 16),
+                      row(
+                          AppConstants.dataSourceYouTube,
+                          'YouTube 正版源',
+                          '内置正版目录 · 免费全集嵌入播放',
+                          Icons.smart_display_rounded),
                       for (final line in PlayLineResolver.enabledLines)
                         if (line.mode == PlayLineMode.api) ...[
                           const Divider(indent: 16),

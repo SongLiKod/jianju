@@ -245,6 +245,7 @@ class _SearchPageState extends State<SearchPage>
       (id: AppConstants.dataSourceWeb, label: '官方网页源'),
       if (settings.hasApi52Key)
         (id: AppConstants.dataSourceApi52, label: '52api 聚合源'),
+      (id: AppConstants.dataSourceYouTube, label: 'YouTube 正版源'),
       for (final line in PlayLineResolver.enabledLines)
         (id: line.id, label: line.name),
     ];

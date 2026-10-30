@@ -79,6 +79,10 @@ class ApiService {
   }) async {
     final site = MaccmsSource.current();
     if (site != null) return site.category(slug, page);
+    // YouTube 正版源：分类页同样跟随所选源，回落内置目录（一页给完，翻页无更多）
+    if (YouTubeSource.enabled) {
+      return page <= 1 ? YouTubeSource.catalog() : const [];
+    }
     for (var attempt = 0; attempt < 3; attempt++) {
       final loader = await HttpClient.getSsrJson(
         ApiConstants.pathCategory(slug, page),
@@ -110,6 +114,14 @@ class ApiService {
       fetchRank({required String slug, int page = 1}) async {
     final site = MaccmsSource.current();
     if (site != null) return site.rank(slug, page);
+    // YouTube 正版源：榜单同样跟随所选源，回落内置目录（单页，totalPages=1）
+    if (YouTubeSource.enabled) {
+      return (
+        updatedText: '',
+        items: page <= 1 ? YouTubeSource.catalog() : const <Drama>[],
+        totalPages: 1,
+      );
+    }
     for (var attempt = 0; attempt < 5; attempt++) {
       final loader = await HttpClient.getSsrJson(
         ApiConstants.pathRank(slug, page),
@@ -274,6 +286,9 @@ class ApiService {
           Api52Source.enabled) {
         out.add((pri: pri++, run: () => Api52Source.search(keyword)));
       }
+      if (onlyIds.contains(AppConstants.dataSourceYouTube)) {
+        out.add((pri: pri++, run: () => YouTubeSource.search(keyword)));
+      }
       final byId = {for (final l in PlayLineResolver.allLines) l.id: l};
       for (final id in onlyIds) {
         final line = byId[id];
@@ -289,10 +304,9 @@ class ApiService {
       out.add((pri: pri++, run: () => site.search(keyword)));
     }
     out.add((pri: pri++, run: () => _searchOfficial(keyword)));
-    // YouTube 正版源：本地目录即时命中，始终并入（当前源即本源时跳过防重复）
-    if (!YouTubeSource.enabled) {
-      out.add((pri: pri++, run: () => YouTubeSource.search(keyword)));
-    }
+    // YouTube 正版源：本地目录即时命中，跨站模式始终并入
+    // （数据源即本源时也不能省略：searchAcross 不经过 ApiService.search）
+    out.add((pri: pri++, run: () => YouTubeSource.search(keyword)));
     if (Api52Source.enabled) {
       out.add((pri: pri++, run: () => Api52Source.search(keyword)));
     }
