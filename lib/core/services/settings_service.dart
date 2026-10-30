@@ -103,6 +103,61 @@ class SettingsService {
   static Future<void> setSearchLimit(int v) =>
       StorageService.setString(AppConstants.keySearchLimit, '$v');
 
+  /// 搜索范围：跨站 / 本站 / 指定站点
+  static String get searchScope {
+    try {
+      final raw = StorageService.getString(AppConstants.keySearchScope);
+      return AppConstants.searchScopeOptions.contains(raw)
+          ? raw
+          : AppConstants.defaultSearchScope;
+    } catch (_) {
+      return AppConstants.defaultSearchScope;
+    }
+  }
+
+  static Future<void> setSearchScope(String scope) =>
+      StorageService.setString(AppConstants.keySearchScope, scope);
+
+  /// 「指定站点」搜索所选站点 id（JSON 数组原始串）
+  static String get pickedSearchSitesRaw {
+    try {
+      return StorageService.getString(AppConstants.keyPickedSearchSites);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static Future<void> setPickedSearchSitesRaw(String raw) =>
+      StorageService.setString(AppConstants.keyPickedSearchSites, raw);
+
+  // ==================== 播放去广告 ====================
+  /// 播放时剔除片头/中插/片尾广告；关闭后原样起播（不做清单改写）。
+  /// 存储未初始化（纯逻辑测试/后台 isolate）时按默认值处理，避免抛错
+  static bool get stripAds {
+    try {
+      return _boolOf(AppConstants.keyStripAds, AppConstants.defaultStripAds);
+    } catch (_) {
+      return AppConstants.defaultStripAds;
+    }
+  }
+
+  static Future<void> setStripAds(bool v) =>
+      _setBool(AppConstants.keyStripAds, v);
+
+  // ==================== 站点启用状态 ====================
+  /// 已停用的站点 id（JSON 数组原始串）：停用后首页切换列表不显示、
+  /// 跨站搜索与播放取链都不再使用该站
+  static String get disabledSitesRaw {
+    try {
+      return StorageService.getString(AppConstants.keyDisabledSites);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static Future<void> setDisabledSitesRaw(String raw) =>
+      StorageService.setString(AppConstants.keyDisabledSites, raw);
+
   // ==================== 数据源 ====================
   /// 数据源：`web` 官方网页源 / `api52` 第三方聚合源 /
   /// `line:<线路id>` 整站数据源（该站的首页/分类/搜索/详情/播放全部数据）

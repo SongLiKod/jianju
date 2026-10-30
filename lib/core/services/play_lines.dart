@@ -38,6 +38,38 @@ class PlayLine {
   bool get isCustom => id.startsWith('custom-');
 }
 
+/// 自动模式探测结果（在线发现页展示用）。
+///
+/// [mode] 为 null 即探测失败，[reason] 给出中文原因。
+class AutoProbeResult {
+  final PlayLineMode? mode;
+  final int latencyMs;
+  final String? sampleTitle;
+  final String? reason;
+
+  const AutoProbeResult({
+    this.mode,
+    this.latencyMs = 0,
+    this.sampleTitle,
+    this.reason,
+  });
+
+  bool get ok => mode != null;
+}
+
+/// 单模式探测结果（内部用：[reason] 为 null 即可用）
+class _ProbeOutcome {
+  final int latencyMs;
+  final String? sampleTitle;
+  final String? reason;
+
+  const _ProbeOutcome({
+    required this.latencyMs,
+    this.sampleTitle,
+    this.reason,
+  });
+}
+
 /// 内置线路注册表（30 条，均端到端验证可解析出 m3u8 直链）
 ///
 /// 前 20 条为短剧站（以《宴律》第 40 集验证）；后 10 条为通用影视资源站
@@ -179,6 +211,31 @@ class PlayLineResolver {
     return List.unmodifiable(_custom);
   }
 
+  /// 已停用的站点 id（设置 → 整站站点 里关闭的站点）
+  static Set<String> disabledIds() {
+    try {
+      final raw = SettingsService.disabledSitesRaw;
+      if (raw.trim().isEmpty) return const <String>{};
+      final list = jsonDecode(raw);
+      if (list is! List) return const <String>{};
+      return {
+        for (final e in list)
+          if (e.toString().trim().isNotEmpty) e.toString().trim(),
+      };
+    } catch (_) {
+      return const <String>{};
+    }
+  }
+
+  /// 启用中的站点：首页切换列表、跨站搜索与播放取链都只用这一份。
+  /// 全部被停用时兜底回全量，避免应用无站可用。
+  static List<PlayLine> get enabledLines {
+    final off = disabledIds();
+    if (off.isEmpty) return allLines;
+    final list = [for (final l in allLines) if (!off.contains(l.id)) l];
+    return list.isEmpty ? allLines : list;
+  }
+
   static void _ensureCustomLoaded() {
     if (_customLoaded) return;
     _customLoaded = true;
@@ -266,34 +323,100 @@ class PlayLineResolver {
   }
 
   /// 站点可用性检测：可用返回 null，否则返回中文失败原因
-  static Future<String?> probeCustom(String base, PlayLineMode mode) async {
+  static Future<String?> probeCustom(String base, PlayLineMode mode) async =>
+      (await _probeMode(base, mode)).reason;
+
+  /// 自动判定模式的可用性检测（在线发现页用）。
+  ///
+  /// 先按标准接口探测、失败再试网页解析：成功返回模式/耗时/样例标题，
+  /// 全失败返回两种模式各自的失败原因。
+  static Future<AutoProbeResult> probeAuto(String base) async {
+    final api = await _probeMode(base, PlayLineMode.api);
+    if (api.reason == null) {
+      return AutoProbeResult(
+        mode: PlayLineMode.api,
+        latencyMs: api.latencyMs,
+        sampleTitle: api.sampleTitle,
+      );
+    }
+    final html = await _probeMode(base, PlayLineMode.html);
+    if (html.reason == null) {
+      return AutoProbeResult(
+        mode: PlayLineMode.html,
+        latencyMs: html.latencyMs,
+        sampleTitle: html.sampleTitle,
+      );
+    }
+    final reason = api.reason == html.reason
+        ? api.reason!
+        : '标准接口：${api.reason}；网页解析：${html.reason}';
+    return AutoProbeResult(
+      reason: reason,
+      latencyMs: api.latencyMs + html.latencyMs,
+    );
+  }
+
+  static Future<_ProbeOutcome> _probeMode(String base, PlayLineMode mode) async {
     final line = PlayLine(id: '__probe__', name: 'probe', base: base, mode: mode);
     final dio = _client(line);
+    final sw = Stopwatch()..start();
     try {
       if (mode == PlayLineMode.api) {
         final body = await _get(
             dio, '$base/api.php/provide/vod/?ac=list&pg=1');
-        if (body == null) return '接口无响应（检查地址是否为 maccms 站点根目录）';
+        if (body == null) {
+          return _probeFail('接口无响应（检查地址是否为 maccms 站点根目录）', sw);
+        }
         final v = _tryJson(body);
-        if (v is! Map) return '接口返回的不是 JSON（该站可能不是标准 maccms 接口）';
+        if (v is! Map) {
+          return _probeFail('接口返回的不是 JSON（该站可能不是标准 maccms 接口）', sw);
+        }
         final list = v['list'];
         final pagecount = int.tryParse(v['pagecount']?.toString() ?? '') ?? 0;
         if (list is! List || (list.isEmpty && pagecount <= 0)) {
-          return '接口可达但无数据（list 为空）';
+          return _probeFail('接口可达但无数据（list 为空）', sw);
         }
-        return null;
+        String? title;
+        if (list.isNotEmpty && list.first is Map) {
+          final t = (list.first as Map)['vod_name']?.toString().trim();
+          if (t != null && t.isNotEmpty) title = t;
+        }
+        return _probeOk(sw, title);
       }
       // html 模式：搜索页可达且含详情/播放链接
       final body = await _get(dio,
           '$base/vodsearch/-------------.html?wd=${Uri.encodeComponent('测试')}');
-      if (body == null) return '搜索页无响应（检查地址是否为 maccms 站点根目录）';
-      if (!RegExp(r'/(?:voddetail|vodplay)/').hasMatch(body)) {
-        return '页面不含 voddetail/vodplay 链接（该站可能不是 maccms 模板）';
+      if (body == null) {
+        return _probeFail('搜索页无响应（检查地址是否为 maccms 站点根目录）', sw);
       }
-      return null;
+      if (!RegExp(r'/(?:voddetail|vodplay)/').hasMatch(body)) {
+        return _probeFail('页面不含 voddetail/vodplay 链接（该站可能不是 maccms 模板）', sw);
+      }
+      return _probeOk(sw, _sampleTitleFromSearch(body));
     } catch (e) {
-      return '检测失败：${_message(e)}';
+      return _probeFail('检测失败：${_message(e)}', sw);
     }
+  }
+
+  static _ProbeOutcome _probeOk(Stopwatch sw, String? title) =>
+      _ProbeOutcome(latencyMs: sw.elapsedMilliseconds, sampleTitle: title);
+
+  static _ProbeOutcome _probeFail(String reason, Stopwatch sw) =>
+      _ProbeOutcome(latencyMs: sw.elapsedMilliseconds, reason: reason);
+
+  /// 搜索页首个结果名（探测结果展示用，取不到返回 null）
+  static String? _sampleTitleFromSearch(String html) {
+    for (final m
+        in RegExp(r'<a\b[^>]*>', caseSensitive: false).allMatches(html)) {
+      final tag = m.group(0)!;
+      if (!tag.contains('voddetail')) continue;
+      final t = RegExp(r'title="([^"]+)"', caseSensitive: false)
+          .firstMatch(tag)
+          ?.group(1)
+          ?.trim();
+      if (t != null && t.isNotEmpty) return t;
+    }
+    return null;
   }
 
   // ==================== 线路集合与排序 ====================
@@ -307,7 +430,7 @@ class PlayLineResolver {
 
   /// 按测速分值升序（分值 = EMA 耗时 + 连续失败惩罚），最快在前
   static List<PlayLine> orderedLines() {
-    final list = allLines;
+    final list = enabledLines;
     list.sort((a, b) => scoreOf(a).compareTo(scoreOf(b)));
     return list;
   }
@@ -339,7 +462,7 @@ class PlayLineResolver {
   /// 不影响跨站搜索的站点优先级（那里仍用 [orderedLines]）。
   static List<PlayLine> orderedLinesForPlay() {
     if (!_qualityFirst()) return orderedLines();
-    final list = allLines;
+    final list = enabledLines;
     list.sort((a, b) {
       final c = _bitrateOf(b).compareTo(_bitrateOf(a)); // 码率高者在前
       if (c != 0) return c;

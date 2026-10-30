@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/models/drama.dart';
 import '../../core/services/api_service.dart';
+import '../../core/services/play_lines.dart';
 import '../../core/services/search_history_service.dart';
 import '../../core/services/source_label.dart';
 import '../../core/state/settings_provider.dart';
@@ -15,12 +16,13 @@ import '../detail/detail_page.dart';
 
 /// 搜索模块
 /// 1. 顶部搜索框支持关键词搜索短剧
-/// 2. 跨站聚合搜索：当前源 + 官方源 + 全部整站站点并发查询、同名不跨站合并
-/// 3. 展示条数可在 设置 → 搜索 → 搜索结果条数 里配置（默认 10 条）
-/// 4. 搜索结果自动过滤广告条目（ApiService 内完成）
-/// 5. 结果样式与首页统一，点击进入详情
-/// 6. 搜索历史：点词重搜、单条删除、一键清空
-/// 7. 宽窗口下结果切换为海报网格，搜索框限宽左对齐
+/// 2. 搜索范围可切换：跨站（默认）/ 本站 / 指定站点（见 AppConstants.searchScope*）
+/// 3. 跨站聚合搜索：当前源 + 官方源 + 52api + 全部启用中的整站站点并发查询
+/// 4. 展示条数可在 设置 → 搜索 → 搜索结果条数 里配置（默认 10 条）
+/// 5. 搜索结果自动过滤广告条目（ApiService 内完成）
+/// 6. 结果样式与首页统一，点击进入详情
+/// 7. 搜索历史：点词重搜、单条删除、一键清空
+/// 8. 宽窗口下结果切换为海报网格，搜索框限宽左对齐
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -44,8 +46,27 @@ class _SearchPageState extends State<SearchPage>
   /// 本次搜索采用的结果条数上限（设置 → 搜索）
   int _limit = AppConstants.defaultSearchLimit;
 
+  /// 搜索范围：跨站 / 本站 / 指定站点（首次 build 时从设置读入）
+  String _scope = AppConstants.defaultSearchScope;
+
+  /// 「指定站点」勾选的站点 id
+  final Set<String> _picked = <String>{};
+  bool _scopeLoaded = false;
+
   @override
   bool get wantKeepAlive => true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_scopeLoaded) return;
+    _scopeLoaded = true;
+    final s = context.read<SettingsProvider>();
+    _scope = s.searchScope;
+    _picked
+      ..clear()
+      ..addAll(s.pickedSites);
+  }
 
   @override
   void dispose() {
@@ -56,10 +77,16 @@ class _SearchPageState extends State<SearchPage>
   Future<void> _submit([String? keyword]) async {
     final kw = (keyword ?? _controller.text).trim();
     if (kw.isEmpty || _searching) return;
+    // 指定站点模式下没勾选任何站点：先弹选择器，不发起搜索
+    if (_scope == AppConstants.searchScopePicked && _picked.isEmpty) {
+      await _pickSites();
+      if (_picked.isEmpty || !mounted) return;
+    }
     FocusScope.of(context).unfocus();
     await SearchHistoryService.add(kw);
     if (!mounted) return;
     final limit = context.read<SettingsProvider>().searchLimit;
+    final scope = _scope;
     setState(() {
       _keyword = kw;
       _searching = true;
@@ -70,10 +97,28 @@ class _SearchPageState extends State<SearchPage>
       _limit = limit;
     });
     try {
-      // 跨站并发搜索：站点陆续返回，结果边搜边出
-      final items = await ApiService.searchAcross(
-        keyword: _keyword,
+      final List<Drama> items;
+      if (scope == AppConstants.searchScopeLocal) {
+        // 本站：只查当前数据源，无跨站进度
+        items = await ApiService.search(keyword: kw);
+        if (!mounted) return;
+        setState(() {
+          _results
+            ..clear()
+            ..addAll(items);
+          _searching = false;
+          _total = 1;
+          _done = 1;
+        });
+        return;
+      }
+      // 并发搜索：站点陆续返回，结果边搜边出
+      items = await ApiService.searchAcross(
+        keyword: kw,
         limit: limit,
+        onlyIds: scope == AppConstants.searchScopePicked
+            ? Set<String>.of(_picked)
+            : null,
         onUpdate: (merged, done, total) {
           if (!mounted) return;
           setState(() {
@@ -113,8 +158,152 @@ class _SearchPageState extends State<SearchPage>
           child: Divider(height: 1),
         ),
       ),
-      body: _buildBody(),
+      body: Column(
+        children: [
+          _scopeBar(),
+          Expanded(child: _buildBody()),
+        ],
+      ),
     );
+  }
+
+  // ==================== 搜索范围（跨站 / 本站 / 指定站点） ====================
+
+  /// 搜索范围选择条：始终显示，切换后立即按新范围重搜
+  Widget _scopeBar() {
+    final scheme = Theme.of(context).colorScheme;
+    final outline = scheme.outline;
+
+    Widget chip(String value, String label, {String? badge}) {
+      final selected = _scope == value;
+      return ChoiceChip(
+        label: Text(
+          badge == null ? label : '$label·$badge',
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? scheme.onPrimaryContainer : outline,
+          ),
+        ),
+        selected: selected,
+        selectedColor: scheme.primaryContainer,
+        visualDensity: VisualDensity.compact,
+        showCheckmark: false,
+        onSelected: (_) => _selectScope(value),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 8, 2),
+      child: Row(
+        children: [
+          chip(AppConstants.searchScopeCross, '跨站'),
+          const SizedBox(width: 6),
+          chip(AppConstants.searchScopeLocal, '本站'),
+          const SizedBox(width: 6),
+          chip(
+            AppConstants.searchScopePicked,
+            '指定站点',
+            badge: _picked.isEmpty ? null : '${_picked.length}',
+          ),
+          const Spacer(),
+          if (_scope == AppConstants.searchScopePicked)
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: scheme.primary,
+              ),
+              icon: const Icon(Icons.tune_rounded, size: 16),
+              label: const Text('选择', style: TextStyle(fontSize: 13)),
+              onPressed: _pickSites,
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 切换搜索范围：持久化到设置，并按新范围重搜当前关键词
+  Future<void> _selectScope(String value) async {
+    if (_scope == value) {
+      if (value == AppConstants.searchScopePicked) await _pickSites();
+      return;
+    }
+    setState(() => _scope = value);
+    await context.read<SettingsProvider>().setSearchScope(value);
+    if (value == AppConstants.searchScopePicked && _picked.isEmpty) {
+      await _pickSites();
+    }
+    if (!mounted || _keyword.isEmpty || _searching) return;
+    await _submit(_keyword);
+  }
+
+  /// 勾选「指定站点」搜索的目标（官方源 / 52api / 启用中的整站站点）
+  Future<void> _pickSites() async {
+    if (!mounted) return;
+    final settings = context.read<SettingsProvider>();
+    final options = <({String id, String label})>[
+      (id: AppConstants.dataSourceWeb, label: '官方网页源'),
+      if (settings.hasApi52Key)
+        (id: AppConstants.dataSourceApi52, label: '52api 聚合源'),
+      for (final line in PlayLineResolver.enabledLines)
+        (id: line.id, label: line.name),
+    ];
+    var picked = Set<String>.of(_picked);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('选择搜索站点', style: TextStyle(fontSize: 17)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final opt in options)
+                  CheckboxListTile(
+                    dense: true,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(opt.label,
+                        style: const TextStyle(fontSize: 14)),
+                    value: picked.contains(opt.id),
+                    onChanged: (v) => setDialogState(() {
+                      if (v == true) {
+                        picked.add(opt.id);
+                      } else {
+                        picked.remove(opt.id);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDialogState(() => picked = <String>{}),
+              child: const Text('清空'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _picked
+      ..clear()
+      ..addAll(picked));
+    await context.read<SettingsProvider>().setPickedSites(_picked);
+    if (!mounted) return;
+    if (_keyword.isNotEmpty && !_searching) await _submit(_keyword);
   }
 
   Widget _buildSearchBar(BuildContext context) {
@@ -207,10 +396,16 @@ class _SearchPageState extends State<SearchPage>
   }
 
   String _footerText() {
-    if (_searching && _total > 0) {
-      return '正在跨站搜索 $_done/$_total 个站点 · 已返回 ${_results.length} 条';
+    if (_scope == AppConstants.searchScopeLocal) {
+      if (_searching) return '正在本站搜索…';
+      return '本站搜索 · 共 ${_results.length} 条';
     }
-    if (_searching) return '正在跨站搜索…';
+    final unit =
+        _scope == AppConstants.searchScopePicked ? '指定站点' : '跨站';
+    if (_searching && _total > 0) {
+      return '正在$unit搜索 $_done/$_total 个站点 · 已返回 ${_results.length} 条';
+    }
+    if (_searching) return '正在$unit搜索…';
     if (_results.length >= _limit) {
       return '已搜索 $_total 个站点 · 仅展示前 $_limit 条（可在设置中调整）';
     }

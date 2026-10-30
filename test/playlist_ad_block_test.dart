@@ -28,12 +28,14 @@ class _Site {
   Future<void> close() => server.close(force: true);
 }
 
-/// 本地假站：4 片正片 + 可选 discontinuity 尾块（2 片），支持 Range
+/// 本地假站：4 片正片 + 可选 discontinuity 尾块（2 片），支持 Range；
+/// [preRollAd] 时先出 2 片异目录片头广告，块序变成 广告/正片/广告/正片
 Future<_Site> _start({
   required int contentLen,
   required int adLen,
   bool adOtherDir = false,
   bool discontinuity = true,
+  bool preRollAd = false,
 }) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   final site = _Site(server);
@@ -41,17 +43,30 @@ Future<_Site> _start({
     ..writeln('#EXTM3U')
     ..writeln('#EXT-X-VERSION:3')
     ..writeln('#EXT-X-TARGETDURATION:4');
+  void seg(String url) => b
+    ..writeln('#EXTINF:4.0,')
+    ..writeln(url);
+  void adSegs() {
+    for (var i = 0; i < 2; i++) {
+      seg(adOtherDir ? '/ad/ad$i.ts' : 'ad$i.ts');
+    }
+  }
+
+  if (preRollAd) {
+    adSegs(); // 片头贴片（独立块，后接 DISCONTINUITY）
+    b.writeln('#EXT-X-DISCONTINUITY');
+  }
   for (var i = 0; i < 4; i++) {
-    b
-      ..writeln('#EXTINF:4.0,')
-      ..writeln('c$i.ts');
+    seg('c$i.ts');
   }
   if (discontinuity) {
     b.writeln('#EXT-X-DISCONTINUITY');
-    for (var i = 0; i < 2; i++) {
-      b
-        ..writeln('#EXTINF:4.0,')
-        ..writeln(adOtherDir ? '/ad/ad$i.ts' : 'ad$i.ts');
+    adSegs();
+    if (preRollAd) {
+      b.writeln('#EXT-X-DISCONTINUITY');
+      for (var i = 4; i < 8; i++) {
+        seg('c$i.ts');
+      }
     }
   }
   b.writeln('#EXT-X-ENDLIST');
@@ -137,6 +152,28 @@ void main() {
       final text = await File(local!).readAsString();
       expect(text, isNot(contains('/ad/ad0.ts')));
       expect(site.reqs.length, 1, reason: '目录判据命中后不应再发探测请求');
+    } finally {
+      await site.close();
+    }
+  });
+
+  test('片头广告在首块时不能把正片删光（fhapi9 症状回归）', () async {
+    // 实测：首块 26.6s 片头广告 + 正片两段共 68 分钟，按「首块=正片」
+    // 判据会删掉正片、留下广告 → 只能播放广告，正片播放不了
+    final site = await _start(
+        contentLen: 100 * 1024, adLen: 400 * 1024, adOtherDir: true, preRollAd: true);
+    try {
+      final local = await PrebufferService.rewritePlaylist(site.master);
+      expect(local, isNotNull, reason: '有广告块应写出改写清单');
+      final text = await File(local!).readAsString();
+      expect(text, isNot(contains('/ad/ad0.ts')), reason: '片头/中插广告都应剔除');
+      expect(text, isNot(contains('/ad/ad1.ts')));
+      expect(text, contains('c0.ts'), reason: '第一段正片必须保留');
+      expect(text, contains('c7.ts'), reason: '第二段正片必须保留');
+      expect(text, contains('#EXT-X-ENDLIST'));
+      expect(
+          site.reqs.where((p) => p.endsWith('.ts')).length, greaterThan(0),
+          reason: '同目录的两段正片会走码率基准比对');
     } finally {
       await site.close();
     }
