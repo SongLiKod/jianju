@@ -12,6 +12,7 @@ import 'api52_source.dart';
 import 'maccms_source.dart';
 import 'play_lines.dart';
 import 'settings_service.dart';
+import 'youtube_source.dart';
 
 /// 短剧官方网页源业务 API：首页信息流 / 搜索 / 详情 / 播放源
 ///
@@ -33,6 +34,8 @@ class ApiService {
   /// [page] 为 0 时返回首页全部分区（banner + 4 个 homeSection）合并去重结果；
   /// [page] >= 1 时按序轮询各分类页分页数据，保证持续有新内容。
   static Future<List<Drama>> fetchHomeFeed({required int page}) async {
+    // YouTube 正版源：内置正版目录（全集免费嵌入播放）
+    if (YouTubeSource.enabled) return YouTubeSource.homeFeed(page);
     final site = MaccmsSource.current();
     if (site != null) return site.homeFeed(page);
     if (page == 0) {
@@ -164,6 +167,7 @@ class ApiService {
   static Future<List<Drama>> search({required String keyword}) async {
     final site = MaccmsSource.current();
     if (site != null) return site.search(keyword);
+    if (YouTubeSource.enabled) return YouTubeSource.search(keyword);
     if (Api52Source.enabled) return Api52Source.search(keyword);
     return _searchOfficial(keyword);
   }
@@ -285,6 +289,10 @@ class ApiService {
       out.add((pri: pri++, run: () => site.search(keyword)));
     }
     out.add((pri: pri++, run: () => _searchOfficial(keyword)));
+    // YouTube 正版源：本地目录即时命中，始终并入（当前源即本源时跳过防重复）
+    if (!YouTubeSource.enabled) {
+      out.add((pri: pri++, run: () => YouTubeSource.search(keyword)));
+    }
     if (Api52Source.enabled) {
       out.add((pri: pri++, run: () => Api52Source.search(keyword)));
     }
@@ -354,6 +362,10 @@ class ApiService {
     if (Api52Source.hasPrefix(seriesId)) {
       return Api52Source.detail(seriesId);
     }
+    // YouTube 正版源分集：内置目录还原（与当前数据源选择无关）
+    if (YouTubeSource.hasPrefix(seriesId)) {
+      return YouTubeSource.detail(seriesId);
+    }
     final loader = await HttpClient.getSsrJson(
       ApiConstants.pathDetail(seriesId),
       loaderKeyPattern: r'detail',
@@ -421,6 +433,10 @@ class ApiService {
     int? episodeIndex,
     String? excludeUrl,
   }) async {
+    // YouTube 正版嵌入源：直出 embed 地址（播放页走 WebView 分支），不参与线路竞速
+    if (YouTubeSource.hasPrefix(vid)) {
+      return YouTubeSource.play(vid);
+    }
     // 整站源分集：按 ID 内嵌的源组/集序号取该站精确直链
     if (MaccmsSource.hasPrefix(vid)) {
       final site = MaccmsSource.byId(vid);

@@ -46,6 +46,8 @@ class AppConstants {
   static const String dataSourceWeb = 'web';
   /// 数据源：52api 聚合源（全集，需 apikey）
   static const String dataSourceApi52 = 'api52';
+  /// 数据源：YouTube 正版源（内置正版目录，embed 嵌入播放，全集免费）
+  static const String dataSourceYouTube = 'youtube';
 
   /// 数据源前缀：整站数据源（`line:<线路id>`，首页/分类/搜索/详情/播放全走该站）
   static const String dataSourceLinePrefix = 'line:';

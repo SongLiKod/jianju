@@ -159,12 +159,13 @@ class SettingsService {
       StorageService.setString(AppConstants.keyDisabledSites, raw);
 
   // ==================== 数据源 ====================
-  /// 数据源：`web` 官方网页源 / `api52` 第三方聚合源 /
+  /// 数据源：`web` 官方网页源 / `api52` 第三方聚合源 / `youtube` 正版嵌入源 /
   /// `line:<线路id>` 整站数据源（该站的首页/分类/搜索/详情/播放全部数据）
   static String get dataSource {
     final raw = StorageService.getString(AppConstants.keyDataSource);
     if (raw == AppConstants.dataSourceApi52 ||
-        raw == AppConstants.dataSourceWeb) {
+        raw == AppConstants.dataSourceWeb ||
+        raw == AppConstants.dataSourceYouTube) {
       return raw;
     }
     if (raw.startsWith(AppConstants.dataSourceLinePrefix)) {

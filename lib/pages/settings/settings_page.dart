@@ -452,6 +452,19 @@ class _SettingsPageState extends State<SettingsPage> {
                     color: outline.withValues(alpha: 0.6), size: 20),
                 onTap: _editApiKey,
               ),
+              const Divider(indent: 16),
+              _sourceTile(
+                context,
+                icon: Icons.smart_display_rounded,
+                label: 'YouTube 正版源',
+                desc: '内置正版目录 · 免费全集嵌入播放',
+                selected:
+                    settings.dataSource == AppConstants.dataSourceYouTube,
+                seed: seed,
+                onTap: () => context
+                    .read<SettingsProvider>()
+                    .setDataSource(AppConstants.dataSourceYouTube),
+              ),
             ],
           ),
 

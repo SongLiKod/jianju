@@ -52,6 +52,8 @@ dependencies:
   media_kit_libs_video: ^1.0.5
   # Windows 端全屏播放
   window_manager: ^0.4.3
+  # YouTube 正版源内嵌播放（Android WebView；Windows 走浏览器回退）
+  webview_flutter: ^4.10.0
   # 版本信息（关于页面）
   package_info_plus: ^8.3.0
   tray_manager: ^0.5.3

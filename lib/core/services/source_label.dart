@@ -1,6 +1,7 @@
 import 'api52_source.dart';
 import 'maccms_source.dart';
 import 'play_lines.dart';
+import 'youtube_source.dart';
 
 /// 资源站点标注：搜索结果等处标明条目来自哪个数据源
 ///
@@ -17,6 +18,9 @@ class SourceLabel {
   /// 52api 聚合源展示名
   static const String api52 = '52api 聚合源';
 
+  /// YouTube 正版源展示名
+  static const String youTube = YouTubeSource.sourceLabel;
+
   /// 条目所属资源站点名（未知 ID 回退官方）
   static String of(String bookId) {
     if (MaccmsSource.hasPrefix(bookId)) {
@@ -26,6 +30,7 @@ class SourceLabel {
       return PlayLineResolver.byId(lineId)?.name ?? lineId;
     }
     if (Api52Source.hasPrefix(bookId)) return api52;
+    if (YouTubeSource.hasPrefix(bookId)) return youTube;
     return official;
   }
 }

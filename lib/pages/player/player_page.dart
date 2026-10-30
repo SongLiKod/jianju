@@ -19,8 +19,10 @@ import '../../core/services/pip_service.dart';
 import '../../core/services/play_headers.dart';
 import '../../core/services/play_lines.dart';
 import '../../core/services/prebuffer_service.dart';
+import '../../core/services/youtube_source.dart';
 import '../../core/state/settings_provider.dart';
 import '../../core/theme/responsive.dart';
+import 'youtube_embed_player.dart';
 
 /// 播放模块（核心）
 ///
@@ -142,6 +144,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 退后台前是否在播放（回前台自动续播用）
   bool _wasPlaying = false;
 
+  // ==================== YouTube 正版源（嵌入播放分支） ====================
+
+  /// 当前集为 YouTube 正版嵌入源时的视频 ID（null = 走 media_kit/mpv）
+  String? _embedVideoId;
+
+  /// 嵌入播放代次：换集/重试即自增并入 WebView 的 Key，强制重建加载新视频
+  int _embedSeq = 0;
+
+  /// 待恢复的进度：构造播放器时随参数下发（就绪后由播放器内部应用）
+  int? _embedSeekMs;
+
+  /// 嵌入播放器超时观察：15s 未就绪转错误提示（多为网络不可达 YouTube）
+  Timer? _embedWatchdog;
+
+  final GlobalKey<YouTubeEmbedPlayerState> _embedKey =
+      GlobalKey<YouTubeEmbedPlayerState>();
+
+  bool get _isEmbed => _embedVideoId != null;
+
   @override
   void initState() {
     super.initState();
@@ -186,7 +207,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         debugPrint('[EP] resume: auto-retry from ${_fmt(_position)}');
         _openEpisode(_episode, resumeSaved: true, resumeAt: _position);
       } else if (_wasPlaying && !_playing && !_loading) {
-        _player.play();
+        if (_isEmbed) {
+          _embedKey.currentState?.play();
+        } else {
+          _player.play();
+        }
       }
     }
   }
@@ -731,6 +756,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       if (!mounted || seq != _openSeq) return;
       _lastPlayUrl = playUrl;
+      // YouTube 正版嵌入源：交给 WebView 分支，不经过 mpv/清单改写/预缓存
+      if (YouTubeSource.isEmbedUrl(playUrl)) {
+        _openEmbed(episode, playUrl, seq,
+            resumeAt: resumeAt, resumeSaved: resumeSaved);
+        return;
+      }
+      if (_embedVideoId != null) {
+        // 从嵌入源换回直链源：撤下 WebView 分支，恢复 mpv 渲染
+        setState(() => _embedVideoId = null);
+      }
       await _applyMpvTweaks();
       if (!mounted || seq != _openSeq) return;
       // 网络流先改写为去广告清单：中插广告段会让 mpv 把流重启回 00:00
@@ -786,10 +821,112 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  /// 嵌入源起播：记录 videoId 交给 WebView 分支渲染
+  ///
+  /// 与 mpv 分支的差异：不 open、不改写清单、不预缓存；
+  /// 进度/状态由播放器心跳回调驱动（见下方 _onEmbed* 系列）。
+  void _openEmbed(
+    Episode episode,
+    String playUrl,
+    int seq, {
+    Duration? resumeAt,
+    required bool resumeSaved,
+  }) {
+    if (!mounted || seq != _openSeq) return;
+    final vid = YouTubeSource.videoIdOf(playUrl);
+    if (vid == null) {
+      setState(() {
+        _loading = false;
+        _error = '嵌入地址无效，请返回重试';
+      });
+      return;
+    }
+    var targetMs = 0;
+    if (resumeAt != null && resumeAt > Duration.zero) {
+      targetMs = resumeAt.inMilliseconds;
+    } else if (resumeSaved) {
+      targetMs =
+          HistoryService.progressOf(widget.drama.bookId, episode.itemId);
+    }
+    setState(() {
+      _embedVideoId = vid;
+      _embedSeq = seq;
+      _embedSeekMs = targetMs > 0 ? targetMs : null;
+      _loading = true;
+      _error = '';
+      _position = Duration.zero;
+      _duration = Duration.zero;
+      _dragValue = null;
+    });
+    _startProgressSaving();
+    // 加载超时看门狗：播放器 15s 未就绪（脚本被墙/视频挂载失败）即转错误
+    _embedWatchdog?.cancel();
+    _embedWatchdog = Timer(const Duration(seconds: 15), () {
+      if (!mounted || seq != _openSeq || !_loading || !_isEmbed) return;
+      debugPrint('[EP] embed 就绪超时（15s）');
+      setState(() {
+        _loading = false;
+        _error = 'YouTube 播放器加载超时\n'
+            '当前网络可能无法访问 YouTube，可稍后重试';
+      });
+    });
+    debugPrint('[EP] embed open #${episode.index} vid=$vid '
+        'seek=${_embedSeekMs ?? 0}');
+  }
+
+  // ==================== 嵌入播放回调 ====================
+
+  /// 播放器就绪：结束加载态，应用倍速（进度恢复已由播放器内部处理）
+  void _onEmbedReady() {
+    if (!mounted || !_isEmbed) return;
+    _embedWatchdog?.cancel();
+    _embedSeekMs = null;
+    setState(() => _loading = false);
+    _embedKey.currentState?.setRate(_speed);
+    debugPrint('[EP] embed ready #${_episode.index}');
+    _scheduleHideControls();
+  }
+
+  /// 心跳：每秒回放播放位置/总时长，驱动进度条、进度记忆与片尾检测
+  void _onEmbedTick(Duration pos, Duration dur) {
+    if (!mounted || !_isEmbed) return;
+    final prev = _position;
+    setState(() {
+      _position = pos;
+      if (dur > Duration.zero) _duration = dur;
+    });
+    if (pos + const Duration(seconds: 1) < prev) {
+      _endHandled = false; // 拖回进度重看：允许再次自动下一集
+    }
+    if (pos > _lastStable) _lastStable = pos;
+    _maybeFinish(pos);
+  }
+
+  void _onEmbedPlaying(bool v) {
+    if (!mounted || !_isEmbed || _playing == v) return;
+    setState(() => _playing = v);
+    debugPrint('[EP] embed playing -> $v');
+  }
+
+  void _onEmbedError(String e) {
+    if (!mounted || !_isEmbed) return;
+    _embedWatchdog?.cancel();
+    debugPrint('[EP] embed error: $e');
+    setState(() {
+      _loading = false;
+      _error = e;
+    });
+  }
+
   /// 等新文件可 seek（时长已知）后再 seek，避免打开瞬间 seek 被 mpv 丢弃
   /// 导致“重试/历史进入从头开始播”
   Future<void> _seekWhenReady(int ms, int seq) async {
     final target = Duration(milliseconds: ms);
+    if (_isEmbed) {
+      // 嵌入源：进度恢复随播放器构造参数下发，此处无需等待
+      _embedKey.currentState?.seekTo(target);
+      return;
+    }
     try {
       // 慢网络下打开媒体可达 10s+，等待时长事件的预算放宽到 20s
       final d = await _player.stream.duration
@@ -824,6 +961,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// ——防“落位即冻结、数秒后回退 0”的假成功；返回是否站稳。
   Future<bool> _seekWithVerify(Duration target, int seq,
       {bool requireAdvance = false}) async {
+    if (_isEmbed) {
+      // 嵌入源：seek 由 IFrame API 直达，无需漂移校验重试
+      _embedKey.currentState?.seekTo(target);
+      return true;
+    }
     final tok = ++_seekToken;
     _seekIssuedAt = DateTime.now();
     if (target <= const Duration(seconds: 10)) {
@@ -968,6 +1110,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _togglePlay() {
     debugPrint('[UI] togglePlay from playing=$_playing');
+    if (_isEmbed) {
+      if (_playing) {
+        _embedKey.currentState?.pause();
+        _showControls();
+      } else {
+        _embedKey.currentState?.play();
+        _scheduleHideControls();
+      }
+      return;
+    }
     if (_playing) {
       _player.pause();
       _showControls();
@@ -1063,7 +1215,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onTap: () {
                     Navigator.pop(sheetContext);
                     setState(() => _speed = s);
-                    _player.setRate(s);
+                    if (_isEmbed) {
+                      _embedKey.currentState?.setRate(s);
+                    } else {
+                      _player.setRate(s);
+                    }
                   },
                 );
               }),
@@ -1196,7 +1352,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             label: '${_volume.round()}',
                             onChanged: (v) {
                               setSheetState(() => _volume = v);
-                              _player.setVolume(v);
+                              // 嵌入源音量跟随系统媒体音量，不走 mpv 通道
+                              if (!_isEmbed) _player.setVolume(v);
                               if (mounted) setState(() => _volume = v);
                             },
                           ),
@@ -1511,10 +1668,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             fit: StackFit.expand,
             children: [
               if (!_fullscreen) ..._buildPortraitLayout(),
-              Video(
-                controller: _controller,
-                controls: NoVideoControls,
-              ),
+              if (_isEmbed)
+                YouTubeEmbedPlayer(
+                  key: ValueKey('$_embedVideoId#$_embedSeq'),
+                  videoId: _embedVideoId!,
+                  initialPositionMs: _embedSeekMs ?? 0,
+                  initialRate: _speed,
+                  onReady: _onEmbedReady,
+                  onTick: _onEmbedTick,
+                  onPlaying: _onEmbedPlaying,
+                  onEnded: () {
+                    if (!mounted || !_isEmbed) return;
+                    _onEpisodeEnd();
+                  },
+                  onError: _onEmbedError,
+                )
+              else
+                Video(
+                  controller: _controller,
+                  controls: NoVideoControls,
+                ),
               if (_loading) _buildLoading(),
               if (_error.isNotEmpty) _buildError(),
               _buildControls(context),
@@ -1616,9 +1789,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 strokeWidth: 2.5, color: Colors.white70),
           ),
           const SizedBox(height: 12),
-          const Text(
-            '正在解析最佳线路…',
-            style: TextStyle(color: Colors.white54, fontSize: 12),
+          Text(
+            _isEmbed ? '正在加载正版播放器…' : '正在解析最佳线路…',
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
           ),
         ],
       ),
@@ -1651,11 +1824,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 child: const Text('重试'),
               ),
               const SizedBox(width: 10),
-              TextButton(
-                style: TextButton.styleFrom(foregroundColor: Colors.white54),
-                onPressed: _showLineSheet,
-                child: const Text('换个线路'),
-              ),
+              if (!_isEmbed)
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.white54),
+                  onPressed: _showLineSheet,
+                  child: const Text('换个线路'),
+                ),
             ],
           ),
         ],
@@ -1733,16 +1907,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   fontWeight: FontWeight.w600),
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.high_quality_rounded, color: Colors.white),
-            tooltip: '画质',
-            onPressed: _showQualitySheet,
-          ),
-          IconButton(
-            icon: const Icon(Icons.cell_tower_rounded, color: Colors.white),
-            tooltip: '播放线路',
-            onPressed: _showLineSheet,
-          ),
+          if (!_isEmbed)
+            IconButton(
+              icon: const Icon(Icons.high_quality_rounded, color: Colors.white),
+              tooltip: '画质',
+              onPressed: _showQualitySheet,
+            ),
+          if (!_isEmbed)
+            IconButton(
+              icon: const Icon(Icons.cell_tower_rounded, color: Colors.white),
+              tooltip: '播放线路',
+              onPressed: _showLineSheet,
+            ),
           IconButton(
             icon: const Icon(Icons.menu_open_rounded, color: Colors.white),
             tooltip: '分集列表',
@@ -1852,7 +2028,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         ? () => _openEpisodeSmart(_nextPlayable!)
                         : null),
                 const Spacer(),
-                if (PipService.isSupported)
+                if (PipService.isSupported && !_isEmbed)
                   _toolButton(
                       context,
                       Icons.picture_in_picture_alt_rounded,
@@ -1926,6 +2102,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _hideTimer?.cancel();
     _recoveryTimer?.cancel();
     _errorWatchdog?.cancel();
+    _embedWatchdog?.cancel();
     _completedSub?.cancel();
     for (final s in _subs) {
       s.cancel();

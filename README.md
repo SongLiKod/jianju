@@ -36,6 +36,7 @@
 - 短剧详情页：封面、简介、全集列表、推荐位
 - **信息流/详情页广告卡片全部过滤**，只渲染正规短剧
 - 搜索历史（最多 20 条）、观看历史、本地收藏
+- **YouTube 正版源**：内置正版目录（《神竹问道之逆天崛起》《九天镇压之主角就应该无敌》《我本是魔之阴阳魔帝》），YouTube 官方 embed 播放器内嵌播放，**全集免费、无解锁**；搜索（含别名，如"竹下问道/魔主齐天/踏道为魔"）与跨站搜索均自动并入结果
 
 ### 播放核心
 - 播放内核 `media_kit`（libmpv），HLS/m3u8 流媒体
@@ -214,6 +215,7 @@ Release 资产命名：
 | 官方网页源 | 抓取短剧站页面接口（`webBase` 等地址） | `services/maccms_source.dart` / `api_service.dart` |
 | 52api 聚合源 | 需填 `apikey` 的聚合接口 | `services/api52_source.dart` |
 | 整站数据源 | `type=maccms` 站点：首页、搜索、详情、播放全走其公开线路 | `services/play_lines.dart` |
+| YouTube 正版源 | 内置正版目录，`yt:` 前缀；播放走 WebView + 官方 IFrame API（Android 内嵌，Windows 回退浏览器打开），进度/自动跳集/倍速与 mpv 分支共用播放页机制 | `services/youtube_source.dart` / `pages/player/youtube_embed_player.dart` |
 
 - 所有接口地址、路径、分类/榜单映射集中在 `lib/core/constants/api_constants.dart`，改地址只需改这一处。
 - 请求统一经 `lib/core/network/http_client.dart` + `request_throttler.dart`（节流重试、防风控），播放请求附带防盗链请求头（`play_headers.dart`）。
